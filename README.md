@@ -6,9 +6,9 @@ Run a pool of role-based agents on a task and get back a reviewed git branch plu
 agentpool run "Add a CSV export to the reports page"
 ```
 
-A planner reads the repo and proposes a plan. You approve it. A developer implements it in an isolated git worktree, QA verifies it by running things, and a reviewer reads the diff. The result is a branch with one commit per step and a `MR.md` you can paste into GitHub or GitLab.
+A planner reads the repo and proposes a plan. You approve it. A developer implements it in an isolated git worktree, QA verifies it by running things, and a reviewer reads the diff. The result is a branch with one commit per step and a `MR.md`, and with `--open-pr` a real pull request (GitHub) or merge request (GitLab).
 
-This is the first MVP. It handles one repository, a typed task, and four roles. See [What is not here yet](#what-is-not-here-yet).
+It handles one repository, a typed or Jira task, and four roles. See [What is not here yet](#what-is-not-here-yet).
 
 ## Quick start
 
@@ -28,6 +28,20 @@ Try the whole flow with fake agents first, at no cost:
 ```sh
 agentpool run --runner dry-run "Anything [ask] [qa-fail-once]"
 ```
+
+## Tickets and pull requests
+
+```sh
+agentpool doctor                                   # checks tools, credentials, remote, config
+agentpool run --jira PROJ-123 --open-pr            # task from Jira Cloud, PR/MR when done
+agentpool run --jira https://acme.atlassian.net/browse/PROJ-123 "use the existing csv helper"
+agentpool pr [run-id] [--dry-run] [--no-draft]     # open the request for a finished run later
+```
+
+- **GitHub and GitLab** are detected from the remote URL (github.com, gitlab.com, or a name containing "gitlab"). Self-hosted servers need `"git": {"host": "github"|"gitlab"}` in `.agentpool/config.json` (optionally `apiUrl`, the full API root, and `remote`).
+- **Tokens** come from the environment and are never written to disk or logs: `GITHUB_TOKEN`/`GH_TOKEN` (or `gh auth login`), `GITLAB_TOKEN`. The token is checked before anything is pushed.
+- The request is a **draft unless the run is ready for review**; `--draft` / `--no-draft` override. Running `pr` twice returns the existing request instead of opening a second one. The base branch must exist on the remote.
+- **Jira Cloud** uses `JIRA_EMAIL` and `JIRA_API_TOKEN` (an Atlassian API token), plus `JIRA_BASE_URL` unless you paste the issue URL or set `"jira": {"baseUrl": ...}`. The ticket becomes the task, the request title is `KEY: summary`, and the agents are told ticket text is untrusted. Text you type alongside `--jira` is added as extra instructions. `agentpool jira PROJ-123` previews the task. `--jira-comment` posts the request link back on the ticket; it is off by default because it writes to a shared system.
 
 ## How a run works
 
@@ -64,13 +78,16 @@ agentpool resume <run-id>                # carry on
 
 | Command | What it does |
 | --- | --- |
-| `run [task...]` | Start a run. `--task-file`, `--repo`, `--base`, `--autonomy`, `--runner`, `--model`, `--max-rounds`, `--budget-usd`, `--agent-budget-usd`, `--assume-defaults`, `--skip-baseline`, `--no-interactive` |
+| `run [task...]` | Start a run. `--task-file`, `--repo`, `--base`, `--autonomy`, `--runner`, `--model`, `--max-rounds`, `--budget-usd`, `--agent-budget-usd`, `--assume-defaults`, `--skip-baseline`, `--no-interactive`, `--jira`, `--open-pr`, `--draft`/`--no-draft`, `--jira-comment` |
 | `resume [run-id]` | Continue a parked, failed or interrupted run |
 | `status [run-id]` | Phase, spend, and what to do next |
 | `list` | Runs in this repository |
 | `log [run-id]` | Full event history (`--json` for raw lines) |
 | `answer`, `approve`, `reject` | Human actions on a parked run |
 | `agents` | The agents that would run here, including repo overrides |
+| `pr [run-id]` | Push the branch and open the GitHub PR / GitLab MR. `--remote`, `--host`, `--draft`, `--no-draft`, `--jira-comment`, `--dry-run` |
+| `jira <key\|url>` | Preview a Jira Cloud issue as a task |
+| `doctor` | Check setup |
 | `clean <run-id>` | Remove a run's worktree; the branch stays |
 
 ## Agents and skills are files
@@ -123,7 +140,7 @@ Agents run with `acceptEdits` permissions and can use the tools their definition
 
 ## What is not here yet
 
-- Jira intake, and opening real pull or merge requests through the GitHub or GitLab API (the run writes `MR.md` and prints the commands)
+- Jira Server / Data Center, other trackers, and updating a pull request after review comments
 - Product owner, architect, UX, and separate frontend and backend roles
 - Web app, live timeline, and a shared message board across machines
 - Repo zones for mixed modern and legacy code, and learning from corrections

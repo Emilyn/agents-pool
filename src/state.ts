@@ -15,6 +15,7 @@ export function reduce(events: RunEvent[]): RunState {
     branch: first.branch,
     worktree: first.worktree,
     options: first.options,
+    source: first.source,
     createdAt: first.ts,
     updatedAt: first.ts,
     phase: 'created',
@@ -105,6 +106,12 @@ export function reduce(events: RunEvent[]): RunState {
         break;
       case 'run.error':
         s.lastError = e.message;
+        break;
+      case 'pr.opened':
+        s.pr = { host: e.host, url: e.url, number: e.number, draft: e.draft, existing: e.existing, remote: e.remote };
+        break;
+      case 'jira.commented':
+        s.jiraCommented = true;
         break;
       case 'run.finished':
         s.phase = e.outcome;

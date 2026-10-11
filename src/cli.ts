@@ -4,19 +4,23 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 import { NullChannel, TerminalChannel } from './channel.js';
 import { loadAgents, loadRepoConfig } from './config.js';
-import { isGitRepo, isDirty, repoRoot as gitRoot } from './git.js';
+import { isGitRepo, isDirty, hasCommits, git, repoRoot as gitRoot } from './git.js';
+import { detectHost, resolveToken, type HostKind } from './host.js';
+import { fetchIssue, parseJiraRef, resolveJiraAuth, taskFromIssue } from './jira.js';
 import { Orchestrator } from './orchestrator.js';
+import { detectProfile } from './profile.js';
+import { commentOnJira, openPullRequest } from './publish.js';
 import { formatStatus } from './report.js';
 import { createRunner } from './runner.js';
 import { RunStore } from './store.js';
-import type { RunEvent, RunOptions } from './types.js';
+import type { RunEvent, RunOptions, RunSource, RunState } from './types.js';
 import { truncate } from './util.js';
 
 const program = new Command();
 program
   .name('agentpool')
   .description('Run a pool of role-based agents on a task and get back a reviewed branch and a merge request description.')
-  .version('0.1.0');
+  .version('0.2.0');
 
 function fail(message: string): never {
   console.error(`error: ${message}`);
@@ -76,6 +80,32 @@ function keyNote(kind: 'claude' | 'dry-run'): void {
   }
 }
 
+/** After a run stops: open the pull request when the run asked for it. A failure here never fails the run itself. */
+async function afterDrive(root: string, store: RunStore, state: RunState): Promise<RunState> {
+  if (state.phase !== 'done') return state;
+  const deps = { repoRoot: root, store, config: loadRepoConfig(root) };
+  if (state.options.openPr && !state.pr) {
+    try {
+      const r = await openPullRequest(deps, state.id, { draft: state.options.draft });
+      console.log(`\n${r.host === 'github' ? 'Pull request' : 'Merge request'}${r.existing ? ' (already existed)' : ''}${r.draft ? ' (draft)' : ''}: ${r.url}`);
+    } catch (e) {
+      console.error(`\nThe run is done, but opening the request failed: ${(e as Error).message}\nFix that, then run: agentpool pr ${state.id}`);
+      process.exitCode = 1;
+    }
+  }
+  const fresh = store.state(state.id);
+  if (fresh.options.jiraComment && fresh.pr && fresh.source && !fresh.jiraCommented) {
+    try {
+      await commentOnJira(deps, fresh.id);
+      console.log(`Commented on ${fresh.source.key}.`);
+    } catch (e) {
+      console.error(`Could not comment on ${fresh.source.key}: ${(e as Error).message}\nRetry with: agentpool pr ${fresh.id} --jira-comment`);
+      process.exitCode = 1;
+    }
+  }
+  return store.state(state.id);
+}
+
 program
   .command('run')
   .description('Start a pool on a task, typed here or read from a file')
@@ -91,16 +121,32 @@ program
   .option('--budget-usd <n>', 'stop the run after this much spend (default 10)')
   .option('--agent-budget-usd <n>', 'spend limit for a single agent step (default 3)')
   .option('--assume-defaults', 'never wait: take the recommended answer and finish flagged if stuck')
+  .option('--jira <key|url>', 'take the task from a Jira Cloud issue (PROJ-123 or its URL); any task text is added as extra instructions')
+  .option('--open-pr', 'when the run finishes, push the branch and open a pull / merge request (GitHub or GitLab)')
+  .option('--draft', 'open it as a draft (default: draft unless the run is ready for review)')
+  .option('--no-draft', 'open it ready for review even if the run flagged problems')
+  .option('--jira-comment', 'after opening the request, comment on the Jira issue with the link')
   .option('--skip-baseline', 'skip installing dependencies and the baseline test run')
   .option('--no-interactive', 'never prompt; park the run and wait for answer/approve instead')
   .action(
     handle(async (taskWords: string[], o) => {
-      const task = (o.task ?? (o.taskFile ? readFileSync(resolve(o.taskFile), 'utf8') : taskWords.join(' '))).trim();
-      if (!task) fail('Give a task: agentpool run "Add CSV export to the reports page"');
+      const typed = (o.task ?? (o.taskFile ? readFileSync(resolve(o.taskFile), 'utf8') : taskWords.join(' '))).trim();
+      if (!typed && !o.jira) fail('Give a task: agentpool run "Add CSV export to the reports page"  (or --jira PROJ-123)');
+      if (o.jiraComment && !o.jira) fail('--jira-comment needs --jira');
+      if (o.jiraComment && !o.openPr) fail('--jira-comment links the pull request, so it needs --open-pr');
       if (o.runner !== 'claude' && o.runner !== 'dry-run') fail('--runner must be claude or dry-run');
       const interactive = o.interactive !== false && isTty() && !o.assumeDefaults;
-      const { root, orchestrator } = await setup({ repo: o.repo, runner: o.runner, interactive });
+      const { root, store, orchestrator } = await setup({ repo: o.repo, runner: o.runner, interactive });
       const cfg = loadRepoConfig(root);
+      let task = typed;
+      let source: RunSource | undefined;
+      if (o.jira) {
+        const ref = parseJiraRef(o.jira);
+        const auth = resolveJiraAuth({ urlBase: ref.baseUrl, configBase: cfg.jira.baseUrl });
+        const issue = await fetchIssue(ref.key, auth);
+        ({ task, source } = taskFromIssue(issue, typed));
+        console.log(`Imported ${issue.key}: ${truncate(issue.summary, 80)}`);
+      }
       if (await isDirty(root)) {
         console.log('note: the repository has uncommitted changes. Agents work from the last commit and will not see them.');
       }
@@ -114,11 +160,14 @@ program
         runner: o.runner,
         model: o.model ?? cfg.model,
         skipBaseline: Boolean(o.skipBaseline),
+        ...(o.openPr ? { openPr: true } : {}),
+        ...(o.draft !== undefined ? { draft: Boolean(o.draft) } : {}),
+        ...(o.jiraComment ? { jiraComment: true } : {}),
       };
       if (options.autonomy !== 'plan-approval' && options.autonomy !== 'auto') fail('--autonomy must be plan-approval or auto');
-      const id = await orchestrator.startRun({ task, options, base: o.base });
+      const id = await orchestrator.startRun({ task, options, base: o.base, source });
       console.log(`Started run ${id}\n`);
-      const state = await orchestrator.drive(id);
+      const state = await afterDrive(root, store, await orchestrator.drive(id));
       console.log(`\n${formatStatus(state)}`);
       if (state.lastError || state.phase === 'failed' || state.phase === 'rejected') process.exitCode = 1;
     }),
@@ -141,7 +190,7 @@ program
       if (kind !== 'claude' && kind !== 'dry-run') fail('--runner must be claude or dry-run');
       const { orchestrator } = await setup({ repo: root, runner: kind, interactive: o.interactive !== false && isTty() && !stored.options.assumeDefaults });
       keyNote(kind);
-      const state = await orchestrator.drive(id);
+      const state = await afterDrive(root, store, await orchestrator.drive(id));
       console.log(`\n${formatStatus(state)}`);
       if (state.lastError || state.phase === 'failed' || state.phase === 'rejected') process.exitCode = 1;
     }),
@@ -174,6 +223,127 @@ program
         const s = store.state(id);
         console.log(`${id}  ${s.phase.padEnd(24)} ${truncate(s.task.replace(/\s+/g, ' '), 60)}`);
       }
+    }),
+  );
+
+program
+  .command('pr')
+  .description('Push the run branch and open a pull request (GitHub) or merge request (GitLab)')
+  .argument('[run-id]', 'defaults to the latest run')
+  .option('--repo <path>', 'repository', '.')
+  .option('--remote <name>', 'git remote to push to (default: origin)')
+  .option('--host <kind>', 'github or gitlab, for self-hosted servers whose name does not say')
+  .option('--draft', 'open as a draft (default: draft unless the run is ready for review)')
+  .option('--no-draft', 'open ready for review even if the run flagged problems')
+  .option('--jira-comment', 'comment on the Jira issue with the link')
+  .option('--dry-run', 'show what would be pushed and opened, without doing it')
+  .action(
+    handle(async (runId: string | undefined, o) => {
+      const root = await resolveRepo(o.repo);
+      const store = new RunStore(root);
+      const id = pickRun(store, runId);
+      if (o.host && o.host !== 'github' && o.host !== 'gitlab') fail('--host must be github or gitlab');
+      const deps = { repoRoot: root, store, config: loadRepoConfig(root) };
+      const r = await openPullRequest(deps, id, { remote: o.remote, host: o.host as HostKind | undefined, draft: o.draft, dryRun: Boolean(o.dryRun) });
+      const noun = r.host === 'github' ? 'pull request' : 'merge request';
+      if (r.dryRun) {
+        const s = store.state(id);
+        console.log(`Would push ${s.branch} to ${r.remote} and open a ${r.draft ? 'draft ' : ''}${noun} into ${s.baseBranch} on ${r.host}.\nTitle: ${r.title}`);
+      } else {
+        console.log(`${r.existing ? `A ${noun} already exists` : `Opened ${noun}`}${r.draft ? ' (draft)' : ''}: ${r.url}`);
+      }
+      if (o.jiraComment && !r.dryRun) {
+        console.log((await commentOnJira(deps, id)) ? 'Commented on the Jira issue.' : 'The Jira issue was already commented on.');
+      }
+    }),
+  );
+
+program
+  .command('jira')
+  .description('Preview a Jira Cloud issue as the task a run would get (nothing is started)')
+  .argument('<key|url>', 'PROJ-123 or the issue URL')
+  .option('--repo <path>', 'repository', '.')
+  .action(
+    handle(async (ref: string, o) => {
+      const root = await resolveRepo(o.repo);
+      const parsed = parseJiraRef(ref);
+      const auth = resolveJiraAuth({ urlBase: parsed.baseUrl, configBase: loadRepoConfig(root).jira.baseUrl });
+      const issue = await fetchIssue(parsed.key, auth);
+      console.log(taskFromIssue(issue).task);
+      console.log(`\n(${issue.url})`);
+    }),
+  );
+
+program
+  .command('doctor')
+  .description('Check that this machine and repository are ready for agentpool')
+  .option('--repo <path>', 'repository', '.')
+  .action(
+    handle(async (o) => {
+      let hard = 0;
+      const line = (mark: 'ok' | 'warn' | 'FAIL', what: string, detail = '') => {
+        if (mark === 'FAIL') hard++;
+        console.log(`${mark.padEnd(4)}  ${what}${detail ? `  ${detail}` : ''}`);
+      };
+      const major = Number(process.versions.node.split('.')[0]);
+      major >= 20 ? line('ok', 'Node', process.versions.node) : line('FAIL', 'Node', `${process.versions.node}; agentpool needs 20 or newer`);
+      try {
+        line('ok', 'git', (await git(process.cwd(), ['--version'])).trim());
+      } catch {
+        line('FAIL', 'git', 'not found on PATH');
+      }
+      const dir = resolve(o.repo ?? '.');
+      if (!(await isGitRepo(dir))) {
+        line('FAIL', 'repository', `${dir} is not inside a git repository`);
+        process.exitCode = 1;
+        return;
+      }
+      const root = await gitRoot(dir);
+      line('ok', 'repository', root);
+      (await hasCommits(root)) ? line('ok', 'commits', 'at least one commit') : line('FAIL', 'commits', 'none yet; agents need something to branch from');
+
+      let cfg: ReturnType<typeof loadRepoConfig> | undefined;
+      try {
+        cfg = loadRepoConfig(root);
+        line('ok', 'config', '.agentpool/config.json is valid or absent');
+      } catch (e) {
+        line('FAIL', 'config', (e as Error).message);
+      }
+      try {
+        const agents = loadAgents(root);
+        line('ok', 'agents', [...agents.keys()].join(', '));
+      } catch (e) {
+        line('FAIL', 'agents', (e as Error).message);
+      }
+      const profile = detectProfile(root, cfg?.commands);
+      profile.commands.test
+        ? line('ok', 'tests', `will run \`${profile.commands.test}\``)
+        : line('warn', 'tests', 'no test command detected; set commands.test in .agentpool/config.json so the run can verify QA');
+
+      process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN
+        ? line('ok', 'Claude credentials', 'found in the environment')
+        : line('warn', 'Claude credentials', 'no ANTHROPIC_API_KEY; an existing Claude Code login will be used if there is one');
+
+      const remote = cfg?.git.remote ?? 'origin';
+      try {
+        const url = (await git(root, ['remote', 'get-url', remote])).trim();
+        try {
+          const ref = detectHost(url, { host: cfg?.git.host, apiUrl: cfg?.git.apiUrl });
+          line('ok', `remote ${remote}`, `${ref.kind} at ${ref.hostname}, project ${ref.project}`);
+          const tok = resolveToken(ref.kind);
+          tok ? line('ok', `${ref.kind} token`, `from ${tok.source}`) : line('warn', `${ref.kind} token`, `none found; \`agentpool pr\` will not work until you set ${ref.kind === 'github' ? 'GITHUB_TOKEN' : 'GITLAB_TOKEN'}`);
+        } catch (e) {
+          line('warn', `remote ${remote}`, (e as Error).message);
+        }
+      } catch {
+        line('warn', `remote ${remote}`, 'not set; runs still work, but `agentpool pr` needs a remote');
+      }
+
+      const jiraBits = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'].filter((k) => process.env[k]);
+      jiraBits.length === 3
+        ? line('ok', 'Jira', 'JIRA_BASE_URL, JIRA_EMAIL and JIRA_API_TOKEN are set')
+        : line('warn', 'Jira', `${jiraBits.length === 0 ? 'not configured (optional)' : `partly set: have ${jiraBits.join(', ')}`}`);
+      if (hard > 0) process.exitCode = 1;
     }),
   );
 
@@ -211,6 +381,10 @@ function describeEvent(e: RunEvent): string {
       return `phase -> ${e.phase}`;
     case 'run.error':
       return `error: ${e.message}`;
+    case 'pr.opened':
+      return `${e.host === 'github' ? 'pull request' : 'merge request'} ${e.existing ? 'already existed' : 'opened'}${e.draft ? ' (draft)' : ''}: ${e.url}`;
+    case 'jira.commented':
+      return `commented on ${e.key}`;
     case 'run.finished':
       return `finished: ${e.outcome}${e.reason ? ` (${e.reason})` : ''}`;
   }

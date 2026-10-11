@@ -45,6 +45,7 @@ import {
   type RunOptions,
   type RunState,
   type StepName,
+  type RunSource,
 } from './types.js';
 import { firstLine, formatUsd, newRunId, truncate } from './util.js';
 
@@ -103,7 +104,7 @@ export class Orchestrator {
 
   /* ---------- Starting a run ---------- */
 
-  async startRun(input: { task: string; options: RunOptions; base?: string }): Promise<string> {
+  async startRun(input: { task: string; options: RunOptions; base?: string; source?: RunSource }): Promise<string> {
     const { repoRoot, store } = this.d;
     if (!(await hasCommits(repoRoot))) {
       throw new Error('This repository has no commits yet. Make an initial commit so agents have something to branch from.');
@@ -125,6 +126,7 @@ export class Orchestrator {
       branch,
       worktree,
       options: input.options,
+      source: input.source,
     });
     return id;
   }

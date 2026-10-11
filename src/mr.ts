@@ -22,6 +22,11 @@ export function readiness(s: RunState): Readiness {
   return { ready: reasons.length === 0, reasons };
 }
 
+/** Title for the pull/merge request: the ticket key and summary for Jira runs, else the first line of the task. */
+export function mrTitle(s: RunState): string {
+  return s.source ? truncate(`${s.source.key}: ${s.source.summary}`, 100) : truncate(firstLine(s.task), 72);
+}
+
 function cmdLine(r: { command: string; exitCode: number | null; timedOut: boolean; durationMs: number } | null | undefined): string {
   if (!r) return 'not run';
   const result = r.timedOut ? 'timed out' : r.exitCode === 0 ? 'passed' : `failed (exit ${r.exitCode})`;
@@ -36,7 +41,7 @@ export function buildMrDescription(s: RunState, extras: { diffStat: string; comm
   const dev = s.dev.at(-1)?.result;
   const qa = s.qa.at(-1);
   const review = s.review.at(-1);
-  const title = truncate(firstLine(s.task), 72);
+  const title = mrTitle(s);
 
   const unsure = [
     ...(dev?.unsure ?? []),
@@ -73,6 +78,7 @@ export function buildMrDescription(s: RunState, extras: { diffStat: string; comm
     '',
     `Produced by agentpool run \`${s.id}\` on branch \`${s.branch}\` (base \`${s.baseBranch}\` at \`${s.baseCommit.slice(0, 8)}\`).`,
     '',
+    ...(s.source ? [`Ticket: ${s.source.url}`, ''] : []),
     '## Task',
     s.task.trim(),
     '',

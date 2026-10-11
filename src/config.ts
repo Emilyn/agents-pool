@@ -45,6 +45,15 @@ export const RepoConfigSchema = z.object({
   budgetUsd: z.number().positive().optional(),
   agentBudgetUsd: z.number().positive().optional(),
   model: z.string().optional(),
+  git: z
+    .object({
+      host: z.enum(['github', 'gitlab']).optional(),
+      /** Full API root, e.g. https://git.example.com/api/v4 */
+      apiUrl: z.string().url().optional(),
+      remote: z.string().optional(),
+    })
+    .default({}),
+  jira: z.object({ baseUrl: z.string().url().optional() }).default({}),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 

@@ -106,6 +106,18 @@ export interface RunOptions {
   runner: 'claude' | 'dry-run';
   model?: string;
   skipBaseline: boolean;
+  /** Open a real PR/MR when the run finishes ready or not (it is marked draft unless ready). */
+  openPr?: boolean;
+  draft?: boolean;
+  jiraComment?: boolean;
+}
+
+/** Where the task came from, when it was not typed. */
+export interface RunSource {
+  type: 'jira';
+  key: string;
+  url: string;
+  summary: string;
 }
 
 export interface CommandResult {
@@ -137,6 +149,7 @@ export type EventBody =
       branch: string;
       worktree: string;
       options: RunOptions;
+      source?: RunSource;
     }
   | { type: 'profile.detected'; profile: RepoProfile }
   | { type: 'baseline.completed'; setup: CommandResult | null; result: CommandResult | null }
@@ -169,6 +182,8 @@ export type EventBody =
   | { type: 'scope.violation'; step: StepName; paths: string[] }
   | { type: 'phase.changed'; phase: Phase }
   | { type: 'run.error'; message: string }
+  | { type: 'pr.opened'; host: 'github' | 'gitlab'; url: string; number: number; draft: boolean; existing: boolean; remote: string }
+  | { type: 'jira.commented'; key: string }
   | { type: 'run.finished'; outcome: 'done' | 'failed' | 'rejected'; reason?: string; mrFile?: string };
 
 export type RunEvent = { seq: number; ts: string; actor: Actor } & EventBody;
@@ -203,6 +218,9 @@ export interface RunState {
   branch: string;
   worktree: string;
   options: RunOptions;
+  source?: RunSource;
+  pr?: { host: 'github' | 'gitlab'; url: string; number: number; draft: boolean; existing: boolean; remote: string };
+  jiraCommented?: boolean;
   createdAt: string;
   updatedAt: string;
   phase: Phase;

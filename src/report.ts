@@ -54,7 +54,9 @@ export function nextSteps(s: RunState): string[] {
         r.ready ? 'Done. Ready for human review.' : `Done, but NOT ready: ${r.reasons.join('; ')}.`,
         `Merge request description: ${s.outcome?.mrFile ?? '(missing)'}`,
         `Branch: ${s.branch}  (worktree: ${s.worktree})`,
-        `Push it and open the request using the commands at the bottom of that file.`,
+        ...(s.pr
+          ? [`${s.pr.host === 'github' ? 'Pull request' : 'Merge request'}${s.pr.draft ? ' (draft)' : ''}: ${s.pr.url}`]
+          : [`Push it and open the request: agentpool pr ${id}   (or use the commands at the bottom of that file)`]),
       ];
     }
     case 'failed':
