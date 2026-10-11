@@ -10,6 +10,7 @@ import { fetchIssue, parseJiraRef, resolveJiraAuth, taskFromIssue } from './jira
 import { Orchestrator } from './orchestrator.js';
 import { detectProfile } from './profile.js';
 import { commentOnJira, openPullRequest } from './publish.js';
+import { startServer } from './server.js';
 import { formatStatus } from './report.js';
 import { createRunner } from './runner.js';
 import { RunStore } from './store.js';
@@ -271,6 +272,26 @@ program
       const issue = await fetchIssue(parsed.key, auth);
       console.log(taskFromIssue(issue).task);
       console.log(`\n(${issue.url})`);
+    }),
+  );
+
+program
+  .command('serve')
+  .description('Start the local web app: runs, live timeline, questions and approvals')
+  .option('--repo <path>', 'repository', '.')
+  .option('--port <n>', 'port to listen on (default 4317)', '4317')
+  .action(
+    handle(async (o) => {
+      const root = await resolveRepo(o.repo);
+      const port = Number(o.port);
+      if (!Number.isInteger(port) || port < 0 || port > 65535) fail('--port must be a number between 0 and 65535');
+      const running = await startServer({ repoRoot: root, port });
+      console.log(`agentpool web app for ${root}\n  ${running.url}\nListening on 127.0.0.1 only. Press Ctrl+C to stop; runs in progress stop with it and continue with \`agentpool resume\`.`);
+      await new Promise<void>((done) => {
+        process.once('SIGINT', done);
+        process.once('SIGTERM', done);
+      });
+      await running.close();
     }),
   );
 

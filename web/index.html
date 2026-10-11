@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agentpool</title>
+<style>
+:root{--bg:#f6f5f2;--panel:#fff;--ink:#1c1b19;--mute:#6b6a65;--line:#e4e2dc;--accent:#2f5d50;--accent-ink:#fff;--warn:#b4501c;--warn-bg:#fbeee4;--bad:#a8302b;--bad-bg:#fbe9e8;--good:#2a6b3f;--good-bg:#e6f3ea;--info-bg:#eef1f5;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#161715;--panel:#1f2120;--ink:#ecebe6;--mute:#9a988f;--line:#33352f;--accent:#7fb7a4;--accent-ink:#10231c;--warn:#e59a66;--warn-bg:#2e2218;--bad:#ef8a85;--bad-bg:#2e1b1a;--good:#7ccb95;--good-bg:#18281d;--info-bg:#232628}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+button,input,textarea,select{font:inherit;color:inherit}
+.app{display:grid;grid-template-columns:300px 1fr;min-height:100vh}
+aside{border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;max-height:100vh;position:sticky;top:0}
+aside header{padding:16px;border-bottom:1px solid var(--line)}
+.brand{font-weight:650;letter-spacing:.2px}
+.repo{color:var(--mute);font-size:12px;word-break:break-all;margin-top:2px}
+.list{overflow:auto;flex:1}
+.item{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:12px 16px;cursor:pointer}
+.item:hover{background:var(--info-bg)}
+.item[aria-current=true]{background:var(--info-bg);box-shadow:inset 3px 0 var(--accent)}
+.item .t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px}
+.item .m{display:flex;gap:8px;align-items:center;margin-top:6px;font-size:12px;color:var(--mute)}
+main{padding:24px 32px 64px;max-width:980px;width:100%}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 14px;cursor:pointer}
+.btn:hover{border-color:var(--mute)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.danger{color:var(--bad)}
+.btn:disabled{opacity:.5;cursor:default}
+.pill{display:inline-block;font-size:12px;padding:1px 9px;border-radius:99px;background:var(--info-bg);border:1px solid var(--line);white-space:nowrap}
+.pill.wait{background:var(--warn-bg);color:var(--warn);border-color:transparent}
+.pill.good{background:var(--good-bg);color:var(--good);border-color:transparent}
+.pill.bad{background:var(--bad-bg);color:var(--bad);border-color:transparent}
+.pill.live::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;margin-right:6px;animation:p 1.2s infinite}
+@keyframes p{50%{opacity:.25}}
+h1{font-size:20px;margin:0 0 6px;line-height:1.3}
+.sub{color:var(--mute);font-size:13px;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:18px 0}
+.card.need{border-color:var(--warn);background:var(--warn-bg)}
+.card.err{border-color:var(--bad);background:var(--bad-bg)}
+.card h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute)}
+.card.need h2{color:var(--warn)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.q{margin:12px 0;padding-bottom:12px;border-bottom:1px dashed var(--line)}
+.q:last-child{border:0;margin-bottom:0;padding-bottom:0}
+input[type=text],textarea,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+textarea{min-height:96px;resize:vertical}
+ul.plain{margin:6px 0 0;padding-left:20px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:22px}
+.tab{background:none;border:0;padding:8px 14px;cursor:pointer;color:var(--mute);border-bottom:2px solid transparent}
+.tab[aria-selected=true]{color:var(--ink);border-color:var(--accent)}
+.tl{list-style:none;margin:14px 0 0;padding:0}
+.ev{display:grid;grid-template-columns:64px 1fr;gap:10px;padding:7px 0;font-size:14px}
+.ev time{white-space:nowrap;color:var(--mute);font-size:12px;font-family:var(--mono);padding-top:2px}
+.ev .who{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);margin-right:8px}
+.ev.sys{color:var(--mute)}
+.msg{border:1px solid var(--line);border-left:3px solid var(--mute);border-radius:8px;padding:8px 12px;background:var(--panel)}
+.msg.objection{border-left-color:var(--bad)}.msg.question{border-left-color:var(--warn)}.msg.decision{border-left-color:var(--good)}.msg.handoff{border-left-color:var(--accent)}
+.msg .k{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute)}
+pre.mr{white-space:pre-wrap;word-break:break-word;font:13px/1.55 var(--mono);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin:14px 0 0}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);padding:22px;width:min(560px,92vw)}
+dialog::backdrop{background:#0006}
+label{display:block;font-size:13px;color:var(--mute);margin:12px 0 4px}
+.chk{display:flex;gap:8px;align-items:flex-start;margin:10px 0;color:var(--ink);font-size:14px}
+.chk input{margin-top:4px}
+.empty{color:var(--mute);padding:60px 0;text-align:center}
+.hint{font-size:12px;color:var(--mute);margin-top:4px}
+a{color:var(--accent)}
+@media (max-width:760px){.app{grid-template-columns:1fr}aside{position:static;max-height:42vh;border-right:0;border-bottom:1px solid var(--line)}main{padding:18px 16px 48px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <header>
+      <div class="brand">agentpool</div>
+      <div class="repo" id="repo"></div>
+      <div class="row"><button class="btn primary" id="new">New run</button></div>
+    </header>
+    <div class="list" id="list" role="list"></div>
+  </aside>
+  <main id="main"><div class="empty">Pick a run, or start a new one.</div></main>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <strong>New run</strong>
+    <label for="task">Task</label>
+    <textarea id="task" placeholder="Add a CSV export to the reports page"></textarea>
+    <label for="jira">Or a Jira Cloud issue (key or URL)</label>
+    <input type="text" id="jira" placeholder="PROJ-123">
+    <div class="hint" id="jirahint">Text above is added as extra instructions when a Jira issue is given.</div>
+    <label for="runner">Agents</label>
+    <select id="runner"><option value="claude">Claude (real, costs money)</option><option value="dry-run">Dry run (fake agents, free)</option></select>
+    <div class="hint" id="keyhint"></div>
+    <div class="chk"><input type="checkbox" id="auto"><label for="auto" style="margin:0;color:inherit">Build without asking me to approve the plan</label></div>
+    <div class="chk"><input type="checkbox" id="openpr"><label for="openpr" style="margin:0;color:inherit">Push and open a pull / merge request when done (needs a token)</label></div>
+    <div class="hint" id="err" style="color:var(--bad)"></div>
+    <div class="row" style="justify-content:flex-end"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="go" type="button">Start</button></div>
+  </form>
+</dialog>
+
+<script>
+const TOKEN = "__AGENTPOOL_TOKEN__";
+const $ = (s) => document.querySelector(s);
+const state = { detail: false, runs: [], sel: null, view: null, tab: 'timeline', after: 0, events: [], info: null };
+
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+async function api(path, method = 'GET', body) {
+  const res = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json', 'x-agentpool-token': TOKEN }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const money = (n) => '$' + (n || 0).toFixed(2);
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+function phaseInfo(phase, working) {
+  const wait = ['awaiting_answers', 'awaiting_plan_approval', 'awaiting_escalation'];
+  const label = phase.replace(/_/g, ' ');
+  if (wait.includes(phase)) return ['wait', 'needs you · ' + label.replace('awaiting ', '')];
+  if (phase === 'done') return ['good', 'done'];
+  if (phase === 'failed' || phase === 'rejected') return ['bad', label];
+  return [working ? 'live' : '', working ? label : label + ' (paused)'];
+}
+function pill(phase, working) { const [c, t] = phaseInfo(phase, working); return h('span', { class: 'pill ' + c }, t); }
+
+function describe(e) {
+  switch (e.type) {
+    case 'run.created': return 'Run created on ' + e.branch;
+    case 'profile.detected': return 'Repo: ' + (e.profile.languages.join(', ') || 'unknown stack') + '; tests: ' + (e.profile.commands.test || 'none found');
+    case 'baseline.completed': return e.result ? 'Baseline tests ' + (e.result.exitCode === 0 ? 'passed' : 'failed (exit ' + e.result.exitCode + ')') : 'No baseline tests';
+    case 'plan.proposed': return 'Plan (round ' + e.round + '): ' + e.plan.summary;
+    case 'question.raised': return (e.blocking ? 'Question for a human: ' : 'Open question: ') + e.text;
+    case 'question.answered': return e.id + ' answered' + (e.viaDefault ? ' by default' : '') + ': ' + e.answer;
+    case 'gate.decided': return e.gate + ' ' + (e.approved ? 'approved' : 'rejected') + (e.note ? ' (' + e.note + ')' : '');
+    case 'step.started': return e.step + ' started, round ' + e.round;
+    case 'step.finished': return e.step + ' finished, round ' + e.round + ', ' + money(e.costUsd);
+    case 'dev.result': return 'Build round ' + e.round + ': ' + e.result.summary;
+    case 'qa.result': return 'QA round ' + e.round + ': ' + e.result.verdict + (e.agentVerdict !== e.result.verdict ? ' (the agent said ' + e.agentVerdict + ', the recorded evidence disagreed)' : '');
+    case 'review.result': return 'Review round ' + e.round + ': ' + e.result.verdict + ', ' + e.result.findings.length + ' finding(s)';
+    case 'scope.violation': return e.step + ' changed files outside its scope; reverted: ' + e.paths.join(', ');
+    case 'phase.changed': return 'Phase: ' + e.phase.replace(/_/g, ' ');
+    case 'run.error': return 'Error: ' + e.message;
+    case 'run.finished': return 'Finished: ' + e.outcome + (e.reason ? ' (' + e.reason + ')' : '');
+    case 'pr.opened': return (e.host === 'github' ? 'Pull request ' : 'Merge request ') + (e.existing ? 'already existed' : 'opened') + (e.draft ? ' (draft)' : '') + ': ' + e.url;
+    case 'jira.commented': return 'Commented on ' + e.key;
+    default: return e.type;
+  }
+}
+function eventRow(e) {
+  if (e.type === 'message.posted') {
+    const m = e.message;
+    return h('li', { class: 'ev' }, h('time', {}, clock(e.ts)),
+      h('div', { class: 'msg ' + m.type }, h('div', { class: 'k' }, m.type + ' · ' + m.from + ' → ' + m.to), h('div', { style: 'white-space:pre-wrap' }, clip(m.body, 1200))));
+  }
+  const quiet = ['step.started', 'step.finished', 'phase.changed', 'profile.detected'].includes(e.type);
+  const bad = e.type === 'run.error' || e.type === 'scope.violation';
+  return h('li', { class: 'ev' + (quiet ? ' sys' : '') }, h('time', {}, clock(e.ts)),
+    h('div', { style: bad ? 'color:var(--bad)' : '' }, h('span', { class: 'who' }, e.actor.type === 'system' ? 'system' : e.actor.id), describe(e)));
+}
+
+function needPanel(v) {
+  const s = v.state;
+  const busy = v.working;
+  const post = (path, body) => async (ev) => {
+    const b = ev.currentTarget; b.disabled = true;
+    try { await api('/runs/' + s.id + path, 'POST', body()); await refreshRun(true); } catch (e) { alert(e.message); b.disabled = false; }
+  };
+  if (s.phase === 'awaiting_answers') {
+    const open = s.questions.filter((q) => q.blocking && q.answer === undefined);
+    return h('section', { class: 'card need' }, h('h2', {}, 'The agents need an answer'),
+      open.map((q) => {
+        const input = h('input', { type: 'text', placeholder: q.recommended ? 'Recommended: ' + q.recommended : 'Your answer', id: 'a-' + q.id });
+        const send = (val) => post('/answer', () => ({ questionId: q.id, answer: val() }));
+        return h('div', { class: 'q' }, h('div', {}, h('strong', {}, q.id + ' · '), q.text, h('span', { class: 'hint' }, '  asked by ' + q.raisedBy)),
+          h('div', { class: 'row' }, (q.options || []).map((o) => h('button', { class: 'btn' + (o === q.recommended ? ' primary' : ''), disabled: busy, onclick: send(() => o) }, o))),
+          h('div', { class: 'row' }, input, h('button', { class: 'btn', disabled: busy, onclick: send(() => input.value) }, 'Answer')));
+      }));
+  }
+  if (s.phase === 'awaiting_plan_approval') {
+    const note = h('input', { type: 'text', placeholder: 'Reason (optional, for rejecting)' });
+    return h('section', { class: 'card need' }, h('h2', {}, 'Approve the plan?'), h('div', {}, s.plan ? s.plan.summary : ''),
+      s.plan ? h('ul', { class: 'plain' }, s.plan.steps.map((x) => h('li', {}, x))) : null,
+      s.plan ? h('div', { class: 'hint', style: 'margin-top:10px' }, 'Acceptance criteria') : null,
+      s.plan ? h('ul', { class: 'plain' }, s.plan.acceptanceCriteria.map((x) => h('li', {}, x))) : null,
+      s.plan && s.plan.assumptions.length ? h('div', {}, h('div', { class: 'hint', style: 'margin-top:10px' }, 'Assumptions made without asking'), h('ul', { class: 'plain' }, s.plan.assumptions.map((x) => h('li', {}, x)))) : null,
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy, onclick: post('/approve', () => ({})) }, 'Approve and build'), note, h('button', { class: 'btn danger', disabled: busy, onclick: post('/reject', () => ({ note: note.value })) }, 'Reject')));
+  }
+  if (s.phase === 'awaiting_escalation') {
+    return h('section', { class: 'card need' }, h('h2', {}, 'Stuck after ' + s.options.maxRounds + ' round(s)'),
+      h('div', {}, 'QA or the reviewer still has open objections. Finishing anyway produces a request flagged as not ready.'),
+      h('ul', { class: 'plain' }, v.readiness.reasons.map((x) => h('li', {}, x))),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy, onclick: post('/approve', () => ({})) }, 'Finish anyway, flagged'), h('button', { class: 'btn danger', disabled: busy, onclick: post('/reject', () => ({})) }, 'Stop the run')));
+  }
+  return null;
+}
+
+function renderRun() {
+  const v = state.view; const main = $('#main');
+  if (!v) { main.replaceChildren(h('div', { class: 'empty' }, 'Pick a run, or start a new one.')); return; }
+  const s = v.state; const terminal = ['done', 'failed', 'rejected'].includes(s.phase);
+  const parked = !terminal && !v.working && !['awaiting_answers', 'awaiting_plan_approval', 'awaiting_escalation'].includes(s.phase);
+  const kids = [
+    h('h1', {}, clip(s.task.split('\n')[0], 140)),
+    h('div', { class: 'sub' }, pill(s.phase, v.working), h('span', {}, s.branch), h('span', {}, money(s.costUsd) + ' of ' + money(s.options.budgetUsd)),
+      h('span', {}, s.dev.length + ' build · ' + s.qa.length + ' QA · ' + s.review.length + ' review'),
+      s.source ? h('a', { href: s.source.url, target: '_blank', rel: 'noreferrer' }, s.source.key) : null,
+      s.pr ? h('a', { href: s.pr.url, target: '_blank', rel: 'noreferrer' }, (s.pr.host === 'github' ? 'Pull request' : 'Merge request') + (s.pr.draft ? ' (draft)' : '')) : null),
+  ];
+  if (v.notice) kids.push(h('section', { class: 'card err' }, v.notice));
+  if (s.lastError && !terminal) kids.push(h('section', { class: 'card err' }, h('div', {}, 'The last step failed: ' + s.lastError)));
+  if (parked || (s.lastError && !terminal && !v.working)) kids.push(h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: async (e) => { e.currentTarget.disabled = true; try { await api('/runs/' + s.id + '/resume', 'POST', {}); await refreshRun(true); } catch (x) { alert(x.message); } } }, 'Resume')));
+  const need = needPanel(v); if (need) kids.push(need);
+  if (s.phase === 'done') {
+    const r = v.readiness;
+    kids.push(h('section', { class: 'card' }, h('h2', {}, r.ready ? 'Ready for human review' : 'Not ready'),
+      r.ready ? null : h('ul', { class: 'plain' }, r.reasons.map((x) => h('li', {}, x))),
+      s.pr ? h('div', {}, h('a', { href: s.pr.url, target: '_blank', rel: 'noreferrer' }, s.pr.url)) : h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: async (e) => { e.currentTarget.disabled = true; try { await api('/runs/' + s.id + '/pr', 'POST', {}); await refreshRun(true); } catch (x) { alert(x.message); e.currentTarget.disabled = false; } } }, 'Push and open ' + 'pull / merge request'), h('span', { class: 'hint' }, 'Opens as a draft unless the run is ready. Needs GITHUB_TOKEN or GITLAB_TOKEN on this machine.'))));
+  }
+  const tabs = h('div', { class: 'tabs', role: 'tablist' }, ['timeline', 'mr'].map((t) => h('button', { class: 'tab', role: 'tab', 'aria-selected': state.tab === t ? 'true' : 'false', onclick: () => { state.tab = t; renderRun(); } }, t === 'timeline' ? 'Timeline' : 'Merge request text')));
+  kids.push(tabs);
+  if (state.tab === 'mr') kids.push(v.mr ? h('pre', { class: 'mr' }, v.mr) : h('div', { class: 'empty' }, 'The merge request text is written when the run finishes.'));
+  else {
+    const quiet = ['step.started', 'step.finished', 'phase.changed', 'profile.detected'];
+    kids.push(h('label', { class: 'chk', style: 'margin-top:12px' }, h('input', { type: 'checkbox', checked: state.detail, onchange: (e) => { state.detail = e.target.checked; renderRun(); } }), 'Show system detail (steps, phases)'));
+    kids.push(h('ol', { class: 'tl' }, state.events.filter((e) => state.detail || !quiet.includes(e.type)).map(eventRow)));
+  }
+  const y = window.scrollY; main.replaceChildren(...kids); window.scrollTo(0, y);
+}
+
+function renderList() {
+  const list = $('#list');
+  if (state.runs.length === 0) { list.replaceChildren(h('div', { class: 'empty' }, 'No runs yet.')); return; }
+  list.replaceChildren(...state.runs.map((r) => h('button', { class: 'item', role: 'listitem', 'aria-current': r.id === state.sel ? 'true' : 'false', onclick: () => select(r.id) },
+    h('div', { class: 't' }, (r.ticket ? r.ticket + ' · ' : '') + r.task.split('\n')[0]),
+    h('div', { class: 'm' }, pill(r.phase, r.working), h('span', {}, money(r.costUsd))))));
+}
+
+async function refreshList() { try { state.runs = (await api('/runs')).runs; renderList(); } catch {} }
+async function refreshRun(reset) {
+  if (!state.sel) return;
+  try {
+    const v = await api('/runs/' + state.sel + '?after=' + (reset ? state.after : state.after));
+    if (state.sel !== v.state.id) return;
+    const prev = state.view;
+    const same = prev && prev.state.id === v.state.id && prev.lastSeq === v.lastSeq && prev.working === v.working && prev.notice === v.notice && v.events.length === 0;
+    state.events = state.events.concat(v.events); state.after = v.lastSeq; state.view = v;
+    if (!same) renderRun(); // do not wipe a half-typed answer when nothing changed
+  } catch (e) { $('#main').replaceChildren(h('div', { class: 'card err' }, e.message)); }
+  refreshList();
+}
+async function select(id) { state.sel = id; state.after = 0; state.events = []; state.view = null; state.tab = 'timeline'; location.hash = id; renderList(); await refreshRun(); }
+
+$('#new').onclick = () => { $('#err').textContent = ''; $('#dlg').showModal(); $('#task').focus(); };
+$('#go').onclick = async () => {
+  const b = $('#go'); b.disabled = true; $('#err').textContent = '';
+  try {
+    const r = await api('/runs', 'POST', { task: $('#task').value, jira: $('#jira').value.trim() || undefined, runner: $('#runner').value, autonomy: $('#auto').checked ? 'auto' : undefined, openPr: $('#openpr').checked });
+    $('#dlg').close(); $('#task').value = ''; $('#jira').value = '';
+    await refreshList(); await select(r.id);
+  } catch (e) { $('#err').textContent = e.message; } finally { b.disabled = false; }
+};
+
+(async () => {
+  try {
+    state.info = await api('/info');
+    $('#repo').textContent = state.info.repo;
+    $('#keyhint').textContent = state.info.claudeKey ? '' : 'No ANTHROPIC_API_KEY on this machine; real agents will use an existing Claude Code login if there is one.';
+    if (state.info.dirty) $('#keyhint').textContent += ' Uncommitted changes in the repository are not seen by agents.';
+  } catch {}
+  await refreshList();
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  if (fromHash && state.runs.some((r) => r.id === fromHash)) await select(fromHash);
+  else if (state.runs[0]) await select(state.runs[0].id);
+  setInterval(refreshList, 4000);
+  setInterval(() => { if (!document.hidden) refreshRun(); }, 1500);
+})();
+</script>
+</body>
+</html>

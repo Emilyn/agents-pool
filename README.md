@@ -29,6 +29,20 @@ Try the whole flow with fake agents first, at no cost:
 agentpool run --runner dry-run "Anything [ask] [qa-fail-once]"
 ```
 
+## Web app
+
+```sh
+agentpool serve            # http://127.0.0.1:4317, for the repository you are in
+```
+
+A local page over the same event logs the CLI uses, so you can mix them: start a run in the browser, answer from the terminal, or the reverse.
+
+- Run list with live status; a timeline that shows agent handoffs, **objections**, questions and decisions as they happen (system detail is a toggle).
+- A "needs you" panel for blocking questions (option buttons plus free text), plan approval, and the stuck-after-rounds decision.
+- Start a run from a typed task or a Jira issue, with real or dry-run agents; open the pull / merge request with a button; read the generated MR text.
+- Local only: it listens on 127.0.0.1, rejects other Host and Origin headers, and every write needs a per-process token embedded in the page. There are no accounts; anyone who can reach your localhost session can act as you, so do not forward the port.
+- Runs execute inside the server process. Stopping the server stops the agents; `agentpool resume <id>` continues them.
+
 ## Tickets and pull requests
 
 ```sh
@@ -88,6 +102,7 @@ agentpool resume <run-id>                # carry on
 | `pr [run-id]` | Push the branch and open the GitHub PR / GitLab MR. `--remote`, `--host`, `--draft`, `--no-draft`, `--jira-comment`, `--dry-run` |
 | `jira <key\|url>` | Preview a Jira Cloud issue as a task |
 | `doctor` | Check setup |
+| `serve` | Local web app (`--port`, `--repo`) |
 | `clean <run-id>` | Remove a run's worktree; the branch stays |
 
 ## Agents and skills are files
@@ -142,7 +157,7 @@ Agents run with `acceptEdits` permissions and can use the tools their definition
 
 - Jira Server / Data Center, other trackers, and updating a pull request after review comments
 - Product owner, architect, UX, and separate frontend and backend roles
-- Web app, live timeline, and a shared message board across machines
+- Hosted or multi-user web app (the current one is local, single-user), and a shared message board across machines
 - Repo zones for mixed modern and legacy code, and learning from corrections
 - Real sandboxing, and agent-to-agent threads with humans joining mid-conversation
 - Independent proposals and disagreement cards between agents
