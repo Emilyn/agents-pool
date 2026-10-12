@@ -29,6 +29,108 @@ Try the whole flow with fake agents first, at no cost:
 agentpool run --runner dry-run "Anything [ask] [qa-fail-once]"
 ```
 
+## How to use it
+
+### 1. Install once
+
+```sh
+git clone https://github.com/Emilyn/agents-pool && cd agents-pool
+npm install && npm run build && npm link     # `agentpool` is now on your PATH
+```
+
+Give it Claude access with `ANTHROPIC_API_KEY`, or rely on an existing Claude Code login. Then check a repository is ready:
+
+```sh
+cd /path/to/your/repo
+agentpool doctor
+```
+
+`doctor` reports what is missing (git, commits, test command, tokens) and exits non-zero only on hard failures. Warnings, such as no Jira token, are fine if you do not use that feature.
+
+### 2. Point it at an existing repository
+
+Nothing needs to be installed in your repo. On the first run agentpool creates a `.agentpool/` folder and adds the run and worktree folders to `.git/info/exclude`, so `git status` stays clean. Your own checkout is never modified: agents work on a copy (a git worktree) on a new branch `agentpool/<run-id>`, starting from your current `HEAD` (or `--base <branch>`). Uncommitted changes are not seen by the agents.
+
+Optional but worthwhile: commit a `.agentpool/config.json` so the run can verify things itself.
+
+```json
+{ "commands": { "setup": "npm ci", "test": "npm test" } }
+```
+
+Test, lint and build commands are auto-detected for Node, Python, Go, Rust, Java and Make projects; set them only when detection is wrong or missing. `doctor` shows what it found.
+
+### 3. Run a task
+
+```sh
+agentpool run "Add a CSV export to the reports page"          # typed task
+agentpool run --task-file ticket.md                           # longer description
+agentpool run --jira PROJ-123                                 # Jira Cloud issue
+agentpool run --jira PROJ-123 --open-pr --jira-comment        # all the way to a PR, link posted on the ticket
+agentpool run --runner dry-run "Anything [ask]"               # fake agents, free, to learn the flow
+```
+
+Or start the web app with `agentpool serve` and use the **New run** button; the CLI and the web app share the same runs.
+
+### 4. Answer when the agents need you
+
+In a terminal you are prompted. Otherwise the run parks and waits, and you answer from the CLI or the web app:
+
+```sh
+agentpool status                       # what is it waiting for?
+agentpool answer <run-id> Q-1 "table"
+agentpool approve <run-id>             # approve the plan (or: reject <run-id> "reason")
+agentpool resume <run-id>
+```
+
+You will be asked about three things: blocking questions from the planner, approval of the plan before any code is written (skip with `--autonomy auto`), and a decision when QA or the reviewer still object after `--max-rounds`.
+
+### 5. Review the result
+
+```sh
+agentpool status                       # phase, spend, what is next
+cat .agentpool/runs/<run-id>/MR.md     # summary, plan, test evidence, QA, review, doubts
+git log --oneline <base>..agentpool/<run-id>
+agentpool log <run-id>                 # everything that happened
+```
+
+Read the **"What the agents were unsure about"** section of `MR.md` first, and check the **Status** line: a run that could not clear QA or review is marked NOT ready rather than hidden. Test results in the "Test evidence" table were run by agentpool itself, not reported by an agent.
+
+### 6. Open the pull or merge request
+
+```sh
+export GITHUB_TOKEN=...                # or GITLAB_TOKEN (or run `gh auth login`)
+agentpool pr <run-id> --dry-run        # show what would be pushed
+agentpool pr <run-id>                  # push the branch and open it (draft unless ready)
+```
+
+Do this by hand instead if you prefer: the commands are at the bottom of `MR.md`.
+
+### 7. Clean up
+
+```sh
+agentpool list                         # all runs in this repo
+agentpool clean <run-id>               # remove the worktree; the branch stays
+```
+
+### Good habits
+
+- Start with small, well-described tasks. The planner asks questions when the answer changes the plan, so a vague task costs a round trip rather than a wrong guess.
+- Use `--budget-usd` to cap spend per run (default $10) and `--assume-defaults` for unattended runs that must never wait.
+- If a run fails a step (network, budget, a malformed agent reply), `agentpool resume <run-id>` retries from where it stopped.
+- Treat ticket text and task text as untrusted input, and run in a container or VM for code you do not trust: the safety notes below explain why.
+
+### Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `This repository has no commits yet` | Make an initial commit; agents branch from a commit. |
+| Run finishes "NOT ready: tests fail" | Look at the Test evidence in `MR.md`. If the tests also failed before the change, the baseline was already red. |
+| `No GitHub token found` / `No GitLab token found` | Set `GITHUB_TOKEN` or `GITLAB_TOKEN`; nothing is pushed until a token is found. |
+| `Cannot tell whether <host> is GitHub or GitLab` | Add `"git": {"host": "gitlab"}` to `.agentpool/config.json`. |
+| `The base branch ... does not exist on origin` | Push the base branch, or start the run with `--base` set to a branch the remote has. |
+| `Jira is not configured` | Set `JIRA_EMAIL`, `JIRA_API_TOKEN`, and `JIRA_BASE_URL` (or paste the full issue URL). |
+| Web app says wrong host or token | Open it from the URL `agentpool serve` printed; it only accepts localhost. |
+
 ## Web app
 
 ```sh
