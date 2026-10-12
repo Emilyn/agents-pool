@@ -15,6 +15,8 @@ export interface PublishDeps {
   env?: NodeJS.ProcessEnv;
   /** Tests inject a client to skip host detection and tokens. */
   client?: HostClient;
+  /** Extra environment for git network calls (the team server passes repo credentials this way). */
+  gitEnv?: NodeJS.ProcessEnv;
 }
 
 export interface PublishOptions {
@@ -46,8 +48,8 @@ export function prBody(md: string): string {
   return body.length > MAX_BODY ? `${body.slice(0, MAX_BODY)}\n\n_(description truncated)_` : body;
 }
 
-async function remoteHasBranch(repoRoot: string, remote: string, branch: string): Promise<boolean> {
-  const out = await git(repoRoot, ['ls-remote', '--heads', remote, branch]);
+async function remoteHasBranch(repoRoot: string, remote: string, branch: string, env?: NodeJS.ProcessEnv): Promise<boolean> {
+  const out = await git(repoRoot, ['ls-remote', '--heads', remote, branch], env);
   return out.trim().length > 0;
 }
 
@@ -86,13 +88,13 @@ export async function openPullRequest(deps: PublishDeps, runId: string, opts: Pu
   }
 
   // Fail before pushing when the target branch is not on the remote: the host would reject it afterwards anyway.
-  if (!(await remoteHasBranch(repoRoot, remote, s.baseBranch))) {
+  if (!(await remoteHasBranch(repoRoot, remote, s.baseBranch, deps.gitEnv))) {
     throw new Error(
       `The base branch "${s.baseBranch}" does not exist on ${remote}. Push it first, or start the run with --base <branch that exists there>.`,
     );
   }
 
-  await git(repoRoot, ['push', '--set-upstream', remote, `${s.branch}:${s.branch}`]);
+  await git(repoRoot, ['push', '--set-upstream', remote, `${s.branch}:${s.branch}`], deps.gitEnv);
 
   const mrFile = s.outcome?.mrFile;
   const md = mrFile && existsSync(mrFile) ? readFileSync(mrFile, 'utf8') : `# ${title}\n\n(The run's MR.md was not found.)`;

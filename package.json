@@ -1,6 +1,6 @@
 {
   "name": "agents-pool",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Autonomous agent pools for the software development lifecycle: a task goes in, a reviewed branch and merge request description come out.",
   "type": "module",
   "bin": {

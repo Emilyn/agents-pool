@@ -1,16 +1,22 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { Command } from 'commander';
 import { NullChannel, TerminalChannel } from './channel.js';
-import { loadAgents, loadRepoConfig } from './config.js';
+import { PACKAGE_ROOT, loadAgents, loadRepoConfig } from './config.js';
 import { isGitRepo, isDirty, hasCommits, git, repoRoot as gitRoot } from './git.js';
 import { detectHost, resolveToken, type HostKind } from './host.js';
 import { fetchIssue, parseJiraRef, resolveJiraAuth, taskFromIssue } from './jira.js';
 import { Orchestrator } from './orchestrator.js';
 import { detectProfile } from './profile.js';
 import { commentOnJira, openPullRequest } from './publish.js';
-import { startServer } from './server.js';
+import { loadMasterKey } from './platform/crypto.js';
+import { Accounts } from './platform/accounts.js';
+import { JsonDb } from './platform/db.js';
+import { DockerExecutor, LocalExecutor } from './platform/executor.js';
+import { LocalRepo, RepoRegistry } from './platform/repos.js';
+import { inProcessExecutor, startServer } from './server.js';
 import { formatStatus } from './report.js';
 import { createRunner } from './runner.js';
 import { RunStore } from './store.js';
@@ -21,7 +27,7 @@ const program = new Command();
 program
   .name('agentpool')
   .description('Run a pool of role-based agents on a task and get back a reviewed branch and a merge request description.')
-  .version('0.2.0');
+  .version('0.3.0');
 
 function fail(message: string): never {
   console.error(`error: ${message}`);
@@ -276,8 +282,25 @@ program
   );
 
 program
+  .command('work')
+  .description('Drive one run to its next stopping point with no prompts and no follow-up actions (used by the server inside containers)')
+  .argument('<run-id>')
+  .option('--repo <path>', 'repository', '.')
+  .action(
+    handle(async (runId: string, o) => {
+      const root = await resolveRepo(o.repo);
+      const store = new RunStore(root);
+      if (!store.exists(runId)) fail(`No run with id ${runId}`);
+      const kind = store.state(runId).options.runner;
+      const { orchestrator } = await setup({ repo: root, runner: kind, interactive: false });
+      const state = await orchestrator.drive(runId);
+      console.log(`stopped in phase ${state.phase}${state.lastError ? ` (error: ${state.lastError})` : ''}`);
+    }),
+  );
+
+program
   .command('serve')
-  .description('Start the local web app: runs, live timeline, questions and approvals')
+  .description('Start the local web app for the repository you are in (single user, localhost only)')
   .option('--repo <path>', 'repository', '.')
   .option('--port <n>', 'port to listen on (default 4317)', '4317')
   .action(
@@ -285,8 +308,80 @@ program
       const root = await resolveRepo(o.repo);
       const port = Number(o.port);
       if (!Number.isInteger(port) || port < 0 || port > 65535) fail('--port must be a number between 0 and 65535');
-      const running = await startServer({ repoRoot: root, port });
-      console.log(`agentpool web app for ${root}\n  ${running.url}\nListening on 127.0.0.1 only. Press Ctrl+C to stop; runs in progress stop with it and continue with \`agentpool resume\`.`);
+      const cli = join(PACKAGE_ROOT, 'dist', 'cli.js');
+      const executor = existsSync(cli) ? new LocalExecutor() : inProcessExecutor({});
+      const running = await startServer({ repos: new LocalRepo(root, basename(root)), executor, port });
+      console.log(`agentpool web app for ${root}\n  ${running.url}\nListening on 127.0.0.1 only. Press Ctrl+C to stop; tasks in progress stop with it and continue with \`agentpool resume\`.`);
+      await new Promise<void>((done) => {
+        process.once('SIGINT', done);
+        process.once('SIGTERM', done);
+      });
+      await running.close();
+    }),
+  );
+
+const envNum = (v: string | undefined, name: string): number | undefined => num(v, name);
+
+program
+  .command('server')
+  .description('Start the team server: accounts, connected repositories, one container per task')
+  .option('--data-dir <path>', 'where accounts, tokens and clones live (env AGENTPOOL_DATA_DIR)')
+  .option('--port <n>', 'port (env AGENTPOOL_PORT, default 4317)')
+  .option('--host <addr>', 'address to listen on (env AGENTPOOL_HOST, default 127.0.0.1)')
+  .option('--public-url <url>', 'the https URL people use, behind your TLS proxy (env AGENTPOOL_PUBLIC_URL)')
+  .option('--executor <kind>', 'docker (default) or local (no isolation, trusted teams only) (env AGENTPOOL_EXECUTOR)')
+  .option('--image <name>', 'worker image for the docker executor (env AGENTPOOL_IMAGE)', 'agentpool-worker')
+  .option('--worker-network <name>', 'docker network for workers (env AGENTPOOL_WORKER_NETWORK)')
+  .option('--worker-cpus <n>', 'CPUs per task container', '2')
+  .option('--worker-memory <size>', 'memory per task container', '4g')
+  .option('--concurrency <n>', 'tasks running at once (env AGENTPOOL_CONCURRENCY, default 2)')
+  .option('--timeout-minutes <n>', 'stop a task that runs longer than this (default 60)')
+  .option('--max-budget-usd <n>', 'upper limit anyone can set for one task (env AGENTPOOL_MAX_BUDGET_USD)')
+  .action(
+    handle(async (o) => {
+      const env = process.env;
+      const dataDir = resolve(o.dataDir ?? env.AGENTPOOL_DATA_DIR ?? './agentpool-data');
+      const host = o.host ?? env.AGENTPOOL_HOST ?? '127.0.0.1';
+      const port = Number(o.port ?? env.AGENTPOOL_PORT ?? 4317);
+      const publicUrl: string | undefined = o.publicUrl ?? env.AGENTPOOL_PUBLIC_URL;
+      const kind: string = o.executor ?? env.AGENTPOOL_EXECUTOR ?? 'docker';
+      if (kind !== 'docker' && kind !== 'local') fail('--executor must be docker or local');
+      if (!Number.isInteger(port) || port < 0 || port > 65535) fail('--port must be a number between 0 and 65535');
+      if (publicUrl && !/^https?:\/\//.test(publicUrl)) fail('--public-url must start with http:// or https://');
+      const image: string = o.image ?? env.AGENTPOOL_IMAGE ?? 'agentpool-worker';
+      let executor;
+      if (kind === 'docker') {
+        const probe = (args: string[]) => new Promise<string | null>((done) => execFile('docker', args, (err, out, errOut) => done(err ? String(errOut || err.message).trim() : null)));
+        const down = await probe(['version', '--format', '{{.Server.Version}}']);
+        if (down) fail(`Docker is not reachable: ${down.split('\n')[0]}\nInstall and start Docker, or use --executor local on a machine you trust.`);
+        if (await probe(['image', 'inspect', image])) fail(`The worker image "${image}" does not exist. Build it with: docker build -t ${image} .`);
+        executor = new DockerExecutor({ image, cpus: o.workerCpus, memory: o.workerMemory, network: o.workerNetwork ?? env.AGENTPOOL_WORKER_NETWORK });
+      } else {
+        if (!existsSync(join(PACKAGE_ROOT, 'dist', 'cli.js'))) fail('Run `npm run build` first: the local executor starts workers from dist/.');
+        executor = new LocalExecutor();
+        console.log('warning: the local executor runs agents directly on this machine with no isolation. Use it only for a team you trust.');
+      }
+      const db = new JsonDb(dataDir);
+      const registry = new RepoRegistry({ dataDir, db, key: loadMasterKey(dataDir), gitName: env.AGENTPOOL_GIT_NAME, gitEmail: env.AGENTPOOL_GIT_EMAIL });
+      const accounts = new Accounts(db);
+      const running = await startServer({
+        repos: registry,
+        registry,
+        accounts,
+        executor,
+        port,
+        host,
+        publicUrl,
+        concurrency: envNum(o.concurrency ?? env.AGENTPOOL_CONCURRENCY, '--concurrency'),
+        timeoutMs: (envNum(o.timeoutMinutes, '--timeout-minutes') ?? 60) * 60_000,
+        maxBudgetUsd: envNum(o.maxBudgetUsd ?? env.AGENTPOOL_MAX_BUDGET_USD, '--max-budget-usd'),
+      });
+      console.log(`agentpool team server (${executor.name} executor)\n  ${running.url}\n  data: ${dataDir}`);
+      if (!accounts.hasUsers()) console.log('No accounts yet: open the URL and create the admin account.');
+      if (host !== '127.0.0.1' && host !== 'localhost' && !publicUrl?.startsWith('https://')) {
+        console.log('warning: listening beyond localhost without an https public URL. Put a TLS proxy in front, or passwords and sessions travel in clear text.');
+      }
+      if (!env.ANTHROPIC_API_KEY) console.log('note: ANTHROPIC_API_KEY is not set. Workers have no other Claude login, so real runs will fail until it is.');
       await new Promise<void>((done) => {
         process.once('SIGINT', done);
         process.once('SIGTERM', done);
@@ -359,6 +454,21 @@ program
       } catch {
         line('warn', `remote ${remote}`, 'not set; runs still work, but `agentpool pr` needs a remote');
       }
+
+      await new Promise<void>((done) =>
+        execFile('docker', ['version', '--format', '{{.Server.Version}}'], (err, out) => {
+          if (err) line('warn', 'docker', 'not reachable; `agentpool server` needs it (or --executor local)');
+          else {
+            line('ok', 'docker', `server ${out.trim()}`);
+            execFile('docker', ['image', 'inspect', 'agentpool-worker'], (e2) => {
+              e2 ? line('warn', 'worker image', 'agentpool-worker not built: docker build -t agentpool-worker .') : line('ok', 'worker image', 'agentpool-worker');
+              done();
+            });
+            return;
+          }
+          done();
+        }),
+      );
 
       const jiraBits = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'].filter((k) => process.env[k]);
       jiraBits.length === 3

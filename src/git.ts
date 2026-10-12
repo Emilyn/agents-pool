@@ -5,9 +5,13 @@ import { promisify } from 'node:util';
 
 const pexec = promisify(execFile);
 
-export async function git(cwd: string, args: string[]): Promise<string> {
+export async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
   try {
-    const { stdout } = await pexec('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 });
+    const { stdout } = await pexec('git', args, {
+      cwd,
+      maxBuffer: 64 * 1024 * 1024,
+      env: env ? { ...process.env, GIT_TERMINAL_PROMPT: '0', ...env } : { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
     return stdout;
   } catch (e) {
     const err = e as { stderr?: Buffer | string; message: string };

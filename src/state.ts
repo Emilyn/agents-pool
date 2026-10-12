@@ -16,6 +16,7 @@ export function reduce(events: RunEvent[]): RunState {
     worktree: first.worktree,
     options: first.options,
     source: first.source,
+    createdBy: first.actor.type === 'human' ? first.actor.id : undefined,
     createdAt: first.ts,
     updatedAt: first.ts,
     phase: 'created',

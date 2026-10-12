@@ -1,14 +1,29 @@
-# agents-pool
+# agentpool
 
-Run a pool of role-based agents on a task and get back a reviewed git branch plus a merge request description.
+A self-hosted pool of role-based AI agents for your repositories. Connect a repo, give the pool a task (typed, or from a Jira issue), answer its questions, approve its plan, and review the pull request it opens.
 
+A planner reads the repo and proposes a plan. You approve it. A developer implements it on an isolated branch, QA verifies it by running things, and a reviewer reads the diff. Every task runs in its own Docker container; the result is a branch with one commit per step and a pull request (GitHub) or merge request (GitLab) whose description lists the evidence and what the agents were unsure about.
+
+Two ways to run it:
+
+| | Team server | Local |
+| --- | --- | --- |
+| Command | `agentpool server` | `agentpool run ...` or `agentpool serve` |
+| For | A team: accounts, connected repos, tasks from the browser | One developer, in a checkout they already have |
+| Repos | Connect by URL and access token; the server keeps a clone | The repo you are standing in |
+| Isolation | One Docker container per task | Git worktree on your machine (not a sandbox) |
+| Guide | [docs/self-hosting.md](docs/self-hosting.md) | [How to use it](#how-to-use-it) below |
+
+## Team server in five minutes
+
+```sh
+npm install && npm run build
+docker build -t agentpool-worker .
+export ANTHROPIC_API_KEY=sk-ant-...  AGENTPOOL_SECRET="$(openssl rand -hex 32)"
+node dist/cli.js server --data-dir ./agentpool-data
 ```
-agentpool run "Add a CSV export to the reports page"
-```
 
-A planner reads the repo and proposes a plan. You approve it. A developer implements it in an isolated git worktree, QA verifies it by running things, and a reviewer reads the diff. The result is a branch with one commit per step and a `MR.md`, and with `--open-pr` a real pull request (GitHub) or merge request (GitLab).
-
-It handles one repository, a typed or Jira task, and four roles. See [What is not here yet](#what-is-not-here-yet).
+Open http://127.0.0.1:4317, create the admin account, add people, **Connect a repository** (URL plus an access token with write access to contents and pull requests), then **New task**. Put it behind HTTPS before anyone else uses it, and read [what the isolation does and does not cover](docs/self-hosting.md#how-tasks-are-isolated).
 
 ## Quick start
 
@@ -131,7 +146,7 @@ agentpool clean <run-id>               # remove the worktree; the branch stays
 | `Jira is not configured` | Set `JIRA_EMAIL`, `JIRA_API_TOKEN`, and `JIRA_BASE_URL` (or paste the full issue URL). |
 | Web app says wrong host or token | Open it from the URL `agentpool serve` printed; it only accepts localhost. |
 
-## Web app
+## Local web app (`agentpool serve`)
 
 ```sh
 agentpool serve            # http://127.0.0.1:4317, for the repository you are in
@@ -142,7 +157,7 @@ A local page over the same event logs the CLI uses, so you can mix them: start a
 - Run list with live status; a timeline that shows agent handoffs, **objections**, questions and decisions as they happen (system detail is a toggle).
 - A "needs you" panel for blocking questions (option buttons plus free text), plan approval, and the stuck-after-rounds decision.
 - Start a run from a typed task or a Jira issue, with real or dry-run agents; open the pull / merge request with a button; read the generated MR text.
-- Local only: it listens on 127.0.0.1, rejects other Host and Origin headers, and every write needs a per-process token embedded in the page. There are no accounts; anyone who can reach your localhost session can act as you, so do not forward the port.
+- Local only: it listens on 127.0.0.1, rejects other Host and Origin headers, and every write needs a per-process token that the page fetches from the server. There are no accounts; anyone who can reach your localhost session can act as you, so do not forward the port.
 - Runs execute inside the server process. Stopping the server stops the agents; `agentpool resume <id>` continues them.
 
 ## Tickets and pull requests
@@ -204,7 +219,9 @@ agentpool resume <run-id>                # carry on
 | `pr [run-id]` | Push the branch and open the GitHub PR / GitLab MR. `--remote`, `--host`, `--draft`, `--no-draft`, `--jira-comment`, `--dry-run` |
 | `jira <key\|url>` | Preview a Jira Cloud issue as a task |
 | `doctor` | Check setup |
-| `serve` | Local web app (`--port`, `--repo`) |
+| `serve` | Local web app for the current repository (`--port`, `--repo`) |
+| `server` | Team server: accounts, connected repos, a container per task. See [docs/self-hosting.md](docs/self-hosting.md) |
+| `work <run-id>` | Internal: what a task container runs to drive a run to its next stopping point |
 | `clean <run-id>` | Remove a run's worktree; the branch stays |
 
 ## Agents and skills are files
@@ -253,13 +270,16 @@ An empty string for a command switches off what was auto-detected.
 
 ## Safety, as it stands
 
+This section is about the local CLI and `serve`. The team server runs each task in a container; see [docs/self-hosting.md](docs/self-hosting.md#how-tasks-are-isolated) for what that covers.
+
+
 Agents run with `acceptEdits` permissions and can use the tools their definition lists, including Bash for the developer, QA and reviewer. The worktree and write-scope checks limit what lands in the branch, but this is **not a sandbox**: a Bash command can still reach anything your user account can. Run it in a container or VM for anything you do not trust. Treat task text pasted from tickets as untrusted input.
 
 ## What is not here yet
 
 - Jira Server / Data Center, other trackers, and updating a pull request after review comments
 - Product owner, architect, UX, and separate frontend and backend roles
-- Hosted or multi-user web app (the current one is local, single-user), and a shared message board across machines
+- Hosted multi-tenant service, SSO / OAuth sign-in, per-repository permissions, webhooks (tasks from issues or comments), and a database instead of a JSON file
 - Repo zones for mixed modern and legacy code, and learning from corrections
 - Real sandboxing, and agent-to-agent threads with humans joining mid-conversation
 - Independent proposals and disagreement cards between agents

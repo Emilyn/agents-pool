@@ -43,7 +43,7 @@ h1{font-size:20px;margin:0 0 6px;line-height:1.3}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
 .q{margin:12px 0;padding-bottom:12px;border-bottom:1px dashed var(--line)}
 .q:last-child{border:0;margin-bottom:0;padding-bottom:0}
-input[type=text],textarea,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+input[type=text],input[type=password],textarea,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 textarea{min-height:96px;resize:vertical}
 ul.plain{margin:6px 0 0;padding-left:20px}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:22px}
@@ -66,44 +66,28 @@ label{display:block;font-size:13px;color:var(--mute);margin:12px 0 4px}
 .empty{color:var(--mute);padding:60px 0;text-align:center}
 .hint{font-size:12px;color:var(--mute);margin-top:4px}
 a{color:var(--accent)}
+
+.auth{max-width:380px;margin:12vh auto;padding:0 20px}
+.auth h1{margin-bottom:4px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mute);margin-right:8px}
+.dot.ready{background:var(--good)}.dot.cloning{background:var(--warn);animation:p 1.2s infinite}.dot.error{background:var(--bad)}
+.sect{padding:10px 16px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute);display:flex;justify-content:space-between;align-items:center}
+.sect button{font-size:12px}
+.link{background:none;border:0;color:var(--accent);cursor:pointer;padding:0}
+.user{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--mute);margin-top:10px;gap:8px}
+details summary{cursor:pointer;color:var(--mute);font-size:13px;margin-top:10px}
+table.users{width:100%;border-collapse:collapse;font-size:14px}table.users td,table.users th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
 @media (max-width:760px){.app{grid-template-columns:1fr}aside{position:static;max-height:42vh;border-right:0;border-bottom:1px solid var(--line)}main{padding:18px 16px 48px}}
 </style>
 </head>
 <body>
-<div class="app">
-  <aside>
-    <header>
-      <div class="brand">agentpool</div>
-      <div class="repo" id="repo"></div>
-      <div class="row"><button class="btn primary" id="new">New run</button></div>
-    </header>
-    <div class="list" id="list" role="list"></div>
-  </aside>
-  <main id="main"><div class="empty">Pick a run, or start a new one.</div></main>
-</div>
+<div id="root"></div>
 
-<dialog id="dlg">
-  <form method="dialog" id="form">
-    <strong>New run</strong>
-    <label for="task">Task</label>
-    <textarea id="task" placeholder="Add a CSV export to the reports page"></textarea>
-    <label for="jira">Or a Jira Cloud issue (key or URL)</label>
-    <input type="text" id="jira" placeholder="PROJ-123">
-    <div class="hint" id="jirahint">Text above is added as extra instructions when a Jira issue is given.</div>
-    <label for="runner">Agents</label>
-    <select id="runner"><option value="claude">Claude (real, costs money)</option><option value="dry-run">Dry run (fake agents, free)</option></select>
-    <div class="hint" id="keyhint"></div>
-    <div class="chk"><input type="checkbox" id="auto"><label for="auto" style="margin:0;color:inherit">Build without asking me to approve the plan</label></div>
-    <div class="chk"><input type="checkbox" id="openpr"><label for="openpr" style="margin:0;color:inherit">Push and open a pull / merge request when done (needs a token)</label></div>
-    <div class="hint" id="err" style="color:var(--bad)"></div>
-    <div class="row" style="justify-content:flex-end"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" id="go" type="button">Start</button></div>
-  </form>
-</dialog>
+<dialog id="dlg"></dialog>
 
 <script>
-const TOKEN = "__AGENTPOOL_TOKEN__";
 const $ = (s) => document.querySelector(s);
-const state = { detail: false, runs: [], sel: null, view: null, tab: 'timeline', after: 0, events: [], info: null };
+const S = { me: null, csrf: null, repos: [], repo: null, runs: [], sel: null, view: null, tab: 'timeline', after: 0, events: [], detail: false, timers: [] };
 
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
@@ -111,33 +95,135 @@ function h(tag, attrs, ...kids) {
     if (v === false || v == null) continue;
     if (k === 'class') el.className = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'value') el.value = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   return el;
 }
 async function api(path, method = 'GET', body) {
-  const res = await fetch('/api' + path, { method, headers: { 'content-type': 'application/json', 'x-agentpool-token': TOKEN }, body: body ? JSON.stringify(body) : undefined });
+  const headers = { 'content-type': 'application/json' };
+  if (S.csrf) headers['x-agentpool-csrf'] = S.csrf;
+  const res = await fetch('/api' + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && S.me && S.me.mode === 'team') { S.me = null; boot(); throw new Error('Your session ended. Log in again.'); }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
 const money = (n) => '$' + (n || 0).toFixed(2);
 const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const clock = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-function phaseInfo(phase, working) {
-  const wait = ['awaiting_answers', 'awaiting_plan_approval', 'awaiting_escalation'];
+const ago = (ts) => { const m = Math.round((Date.now() - new Date(ts)) / 60000); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago'; };
+const WAIT = ['awaiting_answers', 'awaiting_plan_approval', 'awaiting_escalation'];
+function pill(phase, job) {
   const label = phase.replace(/_/g, ' ');
-  if (wait.includes(phase)) return ['wait', 'needs you · ' + label.replace('awaiting ', '')];
-  if (phase === 'done') return ['good', 'done'];
-  if (phase === 'failed' || phase === 'rejected') return ['bad', label];
-  return [working ? 'live' : '', working ? label : label + ' (paused)'];
+  if (WAIT.includes(phase)) return h('span', { class: 'pill wait' }, 'needs you · ' + label.replace('awaiting ', ''));
+  if (phase === 'done') return h('span', { class: 'pill good' }, 'done');
+  if (phase === 'failed' || phase === 'rejected') return h('span', { class: 'pill bad' }, label);
+  if (job === 'queued') return h('span', { class: 'pill' }, 'queued');
+  return h('span', { class: 'pill' + (job ? ' live' : '') }, job ? label : label + ' (paused)');
 }
-function pill(phase, working) { const [c, t] = phaseInfo(phase, working); return h('span', { class: 'pill ' + c }, t); }
+const repoBase = () => '/repos/' + encodeURIComponent(S.repo.id);
+const runBase = () => repoBase() + '/runs/' + encodeURIComponent(S.sel);
+function setHash() { location.hash = S.repo ? '/' + S.repo.id + (S.sel ? '/' + S.sel : '') : ''; }
+function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 
+/* ---------- auth screens ---------- */
+function authScreen(setup) {
+  const name = h('input', { type: 'text', id: 'u', autocomplete: 'username', placeholder: 'name' });
+  const pw = h('input', { type: 'password', id: 'p', autocomplete: setup ? 'new-password' : 'current-password', placeholder: setup ? 'password (10+ characters)' : 'password' });
+  const err = h('div', { class: 'hint', style: 'color:var(--bad);min-height:18px' });
+  const go = async () => {
+    err.textContent = '';
+    try { const r = await api(setup ? '/setup' : '/login', 'POST', { name: name.value, password: pw.value }); S.csrf = r.csrf; await boot(); } catch (e) { err.textContent = e.message; }
+  };
+  pw.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  $('#root').replaceChildren(h('div', { class: 'auth' },
+    h('div', { class: 'brand', style: 'margin-bottom:18px' }, 'agentpool'),
+    h('h1', {}, setup ? 'Create the admin account' : 'Log in'),
+    h('div', { class: 'sub' }, setup ? 'This is the first run of this server. The admin can add everyone else.' : 'Use the account an admin created for you.'),
+    h('label', { for: 'u' }, 'Name'), name, h('label', { for: 'p' }, 'Password'), pw, err,
+    h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: go }, setup ? 'Create account' : 'Log in'))));
+  name.focus();
+}
+
+/* ---------- dialogs ---------- */
+function openDialog(title, content, actions) {
+  const d = $('#dlg');
+  d.replaceChildren(h('strong', {}, title), ...content, h('div', { class: 'row', style: 'justify-content:flex-end;margin-top:16px' }, ...actions));
+  if (!d.open) d.showModal();
+  return d;
+}
+const closeDialog = () => $('#dlg').close();
+const field = (label, el, hint) => [h('label', {}, label), el, hint ? h('div', { class: 'hint' }, hint) : null];
+
+function connectDialog() {
+  const url = h('input', { type: 'text', placeholder: 'https://github.com/your-org/your-repo' });
+  const token = h('input', { type: 'password', placeholder: 'access token', autocomplete: 'off' });
+  const host = h('select', {}, h('option', { value: '' }, 'Detect from the URL'), h('option', { value: 'github' }, 'GitHub (self-hosted)'), h('option', { value: 'gitlab' }, 'GitLab (self-hosted)'));
+  const apiUrl = h('input', { type: 'text', placeholder: 'https://git.example.com/api/v4  (only if not the default)' });
+  const err = h('div', { class: 'hint', style: 'color:var(--bad)' });
+  const go = h('button', { class: 'btn primary', onclick: async () => {
+    go.disabled = true; err.textContent = '';
+    try { const r = await api('/repos', 'POST', { url: url.value.trim(), token: token.value, host: host.value || undefined, apiUrl: apiUrl.value.trim() || undefined }); closeDialog(); await loadRepos(); await pickRepo(r.id); }
+    catch (e) { err.textContent = e.message; } finally { go.disabled = false; }
+  } }, 'Connect');
+  openDialog('Connect a repository', [
+    ...field('Repository URL', url, 'GitHub or GitLab, https. Example: https://github.com/acme/web'),
+    ...field('Access token', token, 'GitHub: a fine-grained token with Contents and Pull requests set to read & write. GitLab: a personal or project token with the api scope. It is stored encrypted and is never shown again or given to the agents.'),
+    h('details', {}, h('summary', {}, 'Self-hosted server'), ...field('Server type', host), ...field('API URL', apiUrl)), err,
+  ], [h('button', { class: 'btn', onclick: closeDialog }, 'Cancel'), go]);
+  url.focus();
+}
+
+function taskDialog() {
+  const task = h('textarea', { placeholder: 'Add a CSV export to the reports page' });
+  const jira = h('input', { type: 'text', placeholder: 'PROJ-123 (optional)' });
+  const base = h('input', { type: 'text', placeholder: S.repo.defaultBranch || 'default branch' });
+  const runner = h('select', {}, h('option', { value: 'claude' }, 'Claude (real, costs money)'), h('option', { value: 'dry-run' }, 'Dry run (fake agents, free)'));
+  const auto = h('input', { type: 'checkbox', id: 'auto' });
+  const pr = h('input', { type: 'checkbox', id: 'openpr' });
+  const err = h('div', { class: 'hint', style: 'color:var(--bad)' });
+  const go = h('button', { class: 'btn primary', onclick: async () => {
+    go.disabled = true; err.textContent = '';
+    try {
+      const r = await api(repoBase() + '/runs', 'POST', { task: task.value, jira: jira.value.trim() || undefined, base: base.value.trim() || undefined, runner: runner.value, autonomy: auto.checked ? 'auto' : undefined, openPr: pr.checked });
+      closeDialog(); await loadRuns(); await pickRun(r.id);
+    } catch (e) { err.textContent = e.message; } finally { go.disabled = false; }
+  } }, 'Start task');
+  const keyWarn = S.me.claudeKey || S.me.mode === 'local' ? null : h('div', { class: 'hint', style: 'color:var(--warn)' }, 'This server has no ANTHROPIC_API_KEY, so real agents will fail. Use a dry run, or ask an admin to set the key.');
+  openDialog('New task in ' + S.repo.name, [
+    ...field('What should the agents do?', task),
+    ...field('Or a Jira Cloud issue', jira, S.me.jira ? 'Text above is added as extra instructions.' : 'Jira is not configured on this server.'),
+    ...field('Start from branch', base, 'Leave empty for ' + (S.repo.defaultBranch || 'the current branch') + '. The pull request will target it.'),
+    ...field('Agents', runner), keyWarn,
+    h('div', { class: 'chk' }, auto, h('label', { for: 'auto', style: 'margin:0;color:inherit' }, 'Build without asking me to approve the plan')),
+    h('div', { class: 'chk' }, pr, h('label', { for: 'openpr', style: 'margin:0;color:inherit' }, 'Push and open a pull / merge request when done')), err,
+  ], [h('button', { class: 'btn', onclick: closeDialog }, 'Cancel'), go]);
+  task.focus();
+}
+
+async function usersDialog() {
+  const render = async () => {
+    const { users } = await api('/users');
+    const name = h('input', { type: 'text', placeholder: 'name' });
+    const pw = h('input', { type: 'password', placeholder: 'temporary password (10+)', autocomplete: 'new-password' });
+    const role = h('select', {}, h('option', { value: 'member' }, 'member'), h('option', { value: 'admin' }, 'admin'));
+    const err = h('div', { class: 'hint', style: 'color:var(--bad)' });
+    openDialog('People', [
+      h('table', { class: 'users', style: 'margin-top:10px' }, users.map((u) => h('tr', {}, h('td', {}, u.name + (u.id === S.me.user.id ? ' (you)' : '')), h('td', {}, u.role + (u.disabled ? ' · disabled' : '')),
+        h('td', { style: 'text-align:right' }, u.id === S.me.user.id ? null : h('button', { class: 'link', onclick: async () => { try { await api('/users/' + u.id + '/' + (u.disabled ? 'enable' : 'disable'), 'POST', {}); render(); } catch (e) { alert(e.message); } } }, u.disabled ? 'enable' : 'disable'))))),
+      h('div', { class: 'hint', style: 'margin-top:14px' }, 'Add a person'),
+      h('div', { class: 'row' }, name, pw, role), err,
+    ], [h('button', { class: 'btn', onclick: closeDialog }, 'Close'), h('button', { class: 'btn primary', onclick: async () => { try { await api('/users', 'POST', { name: name.value, password: pw.value, role: role.value }); render(); } catch (e) { err.textContent = e.message; } } }, 'Add')]);
+  };
+  render();
+}
+
+/* ---------- event rendering ---------- */
 function describe(e) {
   switch (e.type) {
-    case 'run.created': return 'Run created on ' + e.branch;
+    case 'run.created': return 'Task created on ' + e.branch;
     case 'profile.detected': return 'Repo: ' + (e.profile.languages.join(', ') || 'unknown stack') + '; tests: ' + (e.profile.commands.test || 'none found');
     case 'baseline.completed': return e.result ? 'Baseline tests ' + (e.result.exitCode === 0 ? 'passed' : 'failed (exit ' + e.result.exitCode + ')') : 'No baseline tests';
     case 'plan.proposed': return 'Plan (round ' + e.round + '): ' + e.plan.summary;
@@ -170,18 +256,18 @@ function eventRow(e) {
     h('div', { style: bad ? 'color:var(--bad)' : '' }, h('span', { class: 'who' }, e.actor.type === 'system' ? 'system' : e.actor.id), describe(e)));
 }
 
+/* ---------- run view ---------- */
 function needPanel(v) {
-  const s = v.state;
-  const busy = v.working;
+  const s = v.state; const busy = Boolean(v.job);
   const post = (path, body) => async (ev) => {
     const b = ev.currentTarget; b.disabled = true;
-    try { await api('/runs/' + s.id + path, 'POST', body()); await refreshRun(true); } catch (e) { alert(e.message); b.disabled = false; }
+    try { await api(runBase() + path, 'POST', body()); await refreshRun(); } catch (e) { alert(e.message); b.disabled = false; }
   };
   if (s.phase === 'awaiting_answers') {
     const open = s.questions.filter((q) => q.blocking && q.answer === undefined);
     return h('section', { class: 'card need' }, h('h2', {}, 'The agents need an answer'),
       open.map((q) => {
-        const input = h('input', { type: 'text', placeholder: q.recommended ? 'Recommended: ' + q.recommended : 'Your answer', id: 'a-' + q.id });
+        const input = h('input', { type: 'text', placeholder: q.recommended ? 'Recommended: ' + q.recommended : 'Your answer' });
         const send = (val) => post('/answer', () => ({ questionId: q.id, answer: val() }));
         return h('div', { class: 'q' }, h('div', {}, h('strong', {}, q.id + ' · '), q.text, h('span', { class: 'hint' }, '  asked by ' + q.raisedBy)),
           h('div', { class: 'row' }, (q.options || []).map((o) => h('button', { class: 'btn' + (o === q.recommended ? ' primary' : ''), disabled: busy, onclick: send(() => o) }, o))),
@@ -190,102 +276,153 @@ function needPanel(v) {
   }
   if (s.phase === 'awaiting_plan_approval') {
     const note = h('input', { type: 'text', placeholder: 'Reason (optional, for rejecting)' });
-    return h('section', { class: 'card need' }, h('h2', {}, 'Approve the plan?'), h('div', {}, s.plan ? s.plan.summary : ''),
-      s.plan ? h('ul', { class: 'plain' }, s.plan.steps.map((x) => h('li', {}, x))) : null,
-      s.plan ? h('div', { class: 'hint', style: 'margin-top:10px' }, 'Acceptance criteria') : null,
-      s.plan ? h('ul', { class: 'plain' }, s.plan.acceptanceCriteria.map((x) => h('li', {}, x))) : null,
-      s.plan && s.plan.assumptions.length ? h('div', {}, h('div', { class: 'hint', style: 'margin-top:10px' }, 'Assumptions made without asking'), h('ul', { class: 'plain' }, s.plan.assumptions.map((x) => h('li', {}, x)))) : null,
+    const p = s.plan;
+    return h('section', { class: 'card need' }, h('h2', {}, 'Approve the plan?'), h('div', {}, p ? p.summary : ''),
+      p ? h('ul', { class: 'plain' }, p.steps.map((x) => h('li', {}, x))) : null,
+      p ? h('div', { class: 'hint', style: 'margin-top:10px' }, 'Acceptance criteria') : null,
+      p ? h('ul', { class: 'plain' }, p.acceptanceCriteria.map((x) => h('li', {}, x))) : null,
+      p && p.assumptions.length ? h('div', {}, h('div', { class: 'hint', style: 'margin-top:10px' }, 'Assumptions made without asking'), h('ul', { class: 'plain' }, p.assumptions.map((x) => h('li', {}, x)))) : null,
       h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy, onclick: post('/approve', () => ({})) }, 'Approve and build'), note, h('button', { class: 'btn danger', disabled: busy, onclick: post('/reject', () => ({ note: note.value })) }, 'Reject')));
   }
   if (s.phase === 'awaiting_escalation') {
     return h('section', { class: 'card need' }, h('h2', {}, 'Stuck after ' + s.options.maxRounds + ' round(s)'),
       h('div', {}, 'QA or the reviewer still has open objections. Finishing anyway produces a request flagged as not ready.'),
       h('ul', { class: 'plain' }, v.readiness.reasons.map((x) => h('li', {}, x))),
-      h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy, onclick: post('/approve', () => ({})) }, 'Finish anyway, flagged'), h('button', { class: 'btn danger', disabled: busy, onclick: post('/reject', () => ({})) }, 'Stop the run')));
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', disabled: busy, onclick: post('/approve', () => ({})) }, 'Finish anyway, flagged'), h('button', { class: 'btn danger', disabled: busy, onclick: post('/reject', () => ({})) }, 'Stop the task')));
   }
   return null;
 }
 
 function renderRun() {
-  const v = state.view; const main = $('#main');
-  if (!v) { main.replaceChildren(h('div', { class: 'empty' }, 'Pick a run, or start a new one.')); return; }
+  const v = S.view; const main = $('#main');
+  if (!v) { return renderRepoHome(); }
   const s = v.state; const terminal = ['done', 'failed', 'rejected'].includes(s.phase);
-  const parked = !terminal && !v.working && !['awaiting_answers', 'awaiting_plan_approval', 'awaiting_escalation'].includes(s.phase);
+  const paused = !terminal && !v.job && !WAIT.includes(s.phase);
+  const act = (path, label, cls) => h('button', { class: 'btn ' + (cls || ''), onclick: async (e) => { e.currentTarget.disabled = true; try { await api(runBase() + path, 'POST', {}); await refreshRun(); } catch (x) { alert(x.message); e.currentTarget.disabled = false; } } }, label);
   const kids = [
+    h('button', { class: 'link', onclick: () => pickRun(null), style: 'margin-bottom:8px' }, '← ' + S.repo.name),
     h('h1', {}, clip(s.task.split('\n')[0], 140)),
-    h('div', { class: 'sub' }, pill(s.phase, v.working), h('span', {}, s.branch), h('span', {}, money(s.costUsd) + ' of ' + money(s.options.budgetUsd)),
+    h('div', { class: 'sub' }, pill(s.phase, v.job), h('span', {}, s.branch), h('span', {}, money(s.costUsd) + ' of ' + money(s.options.budgetUsd)),
       h('span', {}, s.dev.length + ' build · ' + s.qa.length + ' QA · ' + s.review.length + ' review'),
+      s.createdBy ? h('span', {}, 'by ' + s.createdBy) : null,
       s.source ? h('a', { href: s.source.url, target: '_blank', rel: 'noreferrer' }, s.source.key) : null,
       s.pr ? h('a', { href: s.pr.url, target: '_blank', rel: 'noreferrer' }, (s.pr.host === 'github' ? 'Pull request' : 'Merge request') + (s.pr.draft ? ' (draft)' : '')) : null),
   ];
   if (v.notice) kids.push(h('section', { class: 'card err' }, v.notice));
-  if (s.lastError && !terminal) kids.push(h('section', { class: 'card err' }, h('div', {}, 'The last step failed: ' + s.lastError)));
-  if (parked || (s.lastError && !terminal && !v.working)) kids.push(h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: async (e) => { e.currentTarget.disabled = true; try { await api('/runs/' + s.id + '/resume', 'POST', {}); await refreshRun(true); } catch (x) { alert(x.message); } } }, 'Resume')));
+  if (s.lastError && !terminal) kids.push(h('section', { class: 'card err' }, 'The last step failed: ' + s.lastError));
+  if (v.job) kids.push(h('div', { class: 'row' }, act('/cancel', 'Stop task', 'danger')));
+  else if (paused) kids.push(h('div', { class: 'row' }, act('/resume', 'Resume', 'primary')));
   const need = needPanel(v); if (need) kids.push(need);
   if (s.phase === 'done') {
     const r = v.readiness;
     kids.push(h('section', { class: 'card' }, h('h2', {}, r.ready ? 'Ready for human review' : 'Not ready'),
       r.ready ? null : h('ul', { class: 'plain' }, r.reasons.map((x) => h('li', {}, x))),
-      s.pr ? h('div', {}, h('a', { href: s.pr.url, target: '_blank', rel: 'noreferrer' }, s.pr.url)) : h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: async (e) => { e.currentTarget.disabled = true; try { await api('/runs/' + s.id + '/pr', 'POST', {}); await refreshRun(true); } catch (x) { alert(x.message); e.currentTarget.disabled = false; } } }, 'Push and open ' + 'pull / merge request'), h('span', { class: 'hint' }, 'Opens as a draft unless the run is ready. Needs GITHUB_TOKEN or GITLAB_TOKEN on this machine.'))));
+      s.pr ? h('div', {}, h('a', { href: s.pr.url, target: '_blank', rel: 'noreferrer' }, s.pr.url))
+        : h('div', { class: 'row' }, act('/pr', 'Push and open pull / merge request', 'primary'), h('span', { class: 'hint' }, 'Opens as a draft unless the task is ready for review.'))));
   }
-  const tabs = h('div', { class: 'tabs', role: 'tablist' }, ['timeline', 'mr'].map((t) => h('button', { class: 'tab', role: 'tab', 'aria-selected': state.tab === t ? 'true' : 'false', onclick: () => { state.tab = t; renderRun(); } }, t === 'timeline' ? 'Timeline' : 'Merge request text')));
-  kids.push(tabs);
-  if (state.tab === 'mr') kids.push(v.mr ? h('pre', { class: 'mr' }, v.mr) : h('div', { class: 'empty' }, 'The merge request text is written when the run finishes.'));
+  kids.push(h('div', { class: 'tabs', role: 'tablist' }, ['timeline', 'mr'].map((t) => h('button', { class: 'tab', role: 'tab', 'aria-selected': S.tab === t ? 'true' : 'false', onclick: () => { S.tab = t; renderRun(); } }, t === 'timeline' ? 'Timeline' : 'Merge request text'))));
+  if (S.tab === 'mr') kids.push(v.mr ? h('pre', { class: 'mr' }, v.mr) : h('div', { class: 'empty' }, 'The merge request text is written when the task finishes.'));
   else {
     const quiet = ['step.started', 'step.finished', 'phase.changed', 'profile.detected'];
-    kids.push(h('label', { class: 'chk', style: 'margin-top:12px' }, h('input', { type: 'checkbox', checked: state.detail, onchange: (e) => { state.detail = e.target.checked; renderRun(); } }), 'Show system detail (steps, phases)'));
-    kids.push(h('ol', { class: 'tl' }, state.events.filter((e) => state.detail || !quiet.includes(e.type)).map(eventRow)));
+    kids.push(h('label', { class: 'chk', style: 'margin-top:12px' }, h('input', { type: 'checkbox', checked: S.detail, onchange: (e) => { S.detail = e.target.checked; renderRun(); } }), 'Show system detail (steps, phases)'));
+    kids.push(h('ol', { class: 'tl' }, S.events.filter((e) => S.detail || !quiet.includes(e.type)).map(eventRow)));
   }
   const y = window.scrollY; main.replaceChildren(...kids); window.scrollTo(0, y);
 }
 
-function renderList() {
-  const list = $('#list');
-  if (state.runs.length === 0) { list.replaceChildren(h('div', { class: 'empty' }, 'No runs yet.')); return; }
-  list.replaceChildren(...state.runs.map((r) => h('button', { class: 'item', role: 'listitem', 'aria-current': r.id === state.sel ? 'true' : 'false', onclick: () => select(r.id) },
-    h('div', { class: 't' }, (r.ticket ? r.ticket + ' · ' : '') + r.task.split('\n')[0]),
-    h('div', { class: 'm' }, pill(r.phase, r.working), h('span', {}, money(r.costUsd))))));
+function renderRepoHome() {
+  const main = $('#main'); const r = S.repo;
+  if (!r) { main.replaceChildren(h('div', { class: 'empty' }, S.repos.length ? 'Pick a repository.' : (S.me.mode === 'team' ? 'Connect your first repository to start giving agents tasks.' : 'No repository.'), S.me.mode === 'team' && !S.repos.length ? h('div', { class: 'row', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: connectDialog }, 'Connect a repository')) : null)); return; }
+  const kids = [h('h1', {}, r.name), h('div', { class: 'sub' }, h('span', {}, h('span', { class: 'dot ' + r.status }), r.status === 'ready' ? 'ready' : r.status === 'cloning' ? 'cloning…' : 'clone failed'), r.defaultBranch ? h('span', {}, 'default branch ' + r.defaultBranch) : null, r.webUrl ? h('a', { href: r.webUrl, target: '_blank', rel: 'noreferrer' }, 'open on ' + (r.provider || 'host')) : null, r.syncedAt ? h('span', {}, 'synced ' + ago(r.syncedAt)) : null)];
+  if (r.status === 'error') kids.push(h('section', { class: 'card err' }, r.error || 'The clone failed.'));
+  if (r.canPush === false) kids.push(h('section', { class: 'card' }, 'This token can read the repository but cannot push, so tasks can run but pull requests cannot be opened. Reconnect with a token that has write access.'));
+  const actions = [h('button', { class: 'btn primary', disabled: r.status !== 'ready', onclick: taskDialog }, 'New task')];
+  if (S.me.mode === 'team') {
+    actions.push(h('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; try { await api(repoBase() + '/sync', 'POST', {}); await loadRepos(); } catch (x) { alert(x.message); } renderRepoHome(); } }, r.status === 'error' ? 'Retry clone' : 'Sync'));
+    if (S.me.user.role === 'admin') actions.push(h('button', { class: 'btn danger', onclick: async () => { if (!confirm('Remove ' + r.name + ' and its server copy? Branches and pull requests on the host are not touched.')) return; try { await api(repoBase(), 'DELETE'); S.repo = null; await loadRepos(); setHash(); render(); } catch (x) { alert(x.message); } } }, 'Remove'));
+  }
+  kids.push(h('div', { class: 'row' }, ...actions));
+  kids.push(h('h2', { style: 'font-size:14px;margin:26px 0 4px;color:var(--mute);text-transform:uppercase;letter-spacing:.6px' }, 'Tasks'));
+  if (!S.runs.length) kids.push(h('div', { class: 'empty', style: 'padding:30px 0' }, 'No tasks yet.'));
+  kids.push(...S.runs.map((x) => h('button', { class: 'item', style: 'border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel)', onclick: () => pickRun(x.id) },
+    h('div', { class: 't' }, (x.ticket ? x.ticket + ' · ' : '') + x.task.split('\n')[0]),
+    h('div', { class: 'm' }, pill(x.phase, x.job), h('span', {}, money(x.costUsd)), x.createdBy ? h('span', {}, x.createdBy) : null, h('span', {}, ago(x.updatedAt))))));
+  main.replaceChildren(...kids);
 }
 
-async function refreshList() { try { state.runs = (await api('/runs')).runs; renderList(); } catch {} }
-async function refreshRun(reset) {
-  if (!state.sel) return;
-  try {
-    const v = await api('/runs/' + state.sel + '?after=' + (reset ? state.after : state.after));
-    if (state.sel !== v.state.id) return;
-    const prev = state.view;
-    const same = prev && prev.state.id === v.state.id && prev.lastSeq === v.lastSeq && prev.working === v.working && prev.notice === v.notice && v.events.length === 0;
-    state.events = state.events.concat(v.events); state.after = v.lastSeq; state.view = v;
-    if (!same) renderRun(); // do not wipe a half-typed answer when nothing changed
-  } catch (e) { $('#main').replaceChildren(h('div', { class: 'card err' }, e.message)); }
-  refreshList();
+/* ---------- shell ---------- */
+function renderShell() {
+  const team = S.me.mode === 'team';
+  const side = h('aside', {},
+    h('header', {}, h('div', { class: 'brand' }, 'agentpool'),
+      h('div', { class: 'user' }, h('span', {}, team ? S.me.user.name + ' · ' + S.me.user.role : 'local · ' + S.me.executor), team ? h('span', {}, S.me.user.role === 'admin' ? h('button', { class: 'link', onclick: usersDialog }, 'People') : null, ' ', h('button', { class: 'link', onclick: async () => { try { await api('/logout', 'POST', {}); } catch {} S.me = null; S.csrf = null; boot(); } }, 'Log out')) : null)),
+    h('div', { class: 'list', id: 'sidelist' }));
+  $('#root').replaceChildren(h('div', { class: 'app' }, side, h('main', { id: 'main' })));
+  renderSide();
 }
-async function select(id) { state.sel = id; state.after = 0; state.events = []; state.view = null; state.tab = 'timeline'; location.hash = id; renderList(); await refreshRun(); }
+function renderSide() {
+  const list = $('#sidelist'); if (!list) return;
+  const team = S.me.mode === 'team';
+  const kids = [];
+  if (team || S.repos.length > 1) {
+    kids.push(h('div', { class: 'sect' }, 'Repositories', team ? h('button', { class: 'link', onclick: connectDialog }, '+ Connect') : null));
+    kids.push(...S.repos.map((r) => h('button', { class: 'item', 'aria-current': S.repo && S.repo.id === r.id ? 'true' : 'false', onclick: () => pickRepo(r.id) }, h('div', { class: 't' }, h('span', { class: 'dot ' + r.status }), r.name))));
+    if (!S.repos.length) kids.push(h('div', { class: 'hint', style: 'padding:6px 16px' }, 'None yet.'));
+  }
+  if (S.repo) {
+    kids.push(h('div', { class: 'sect' }, 'Tasks', S.repo.status === 'ready' ? h('button', { class: 'link', onclick: taskDialog }, '+ New') : null));
+    kids.push(...S.runs.map((r) => h('button', { class: 'item', 'aria-current': r.id === S.sel ? 'true' : 'false', onclick: () => pickRun(r.id) },
+      h('div', { class: 't' }, (r.ticket ? r.ticket + ' · ' : '') + r.task.split('\n')[0]), h('div', { class: 'm' }, pill(r.phase, r.job), h('span', {}, money(r.costUsd))))));
+    if (!S.runs.length) kids.push(h('div', { class: 'hint', style: 'padding:6px 16px' }, 'No tasks yet.'));
+  }
+  list.replaceChildren(...kids);
+}
+function render() { renderSide(); if (S.sel && S.view) renderRun(); else renderRepoHome(); }
 
-$('#new').onclick = () => { $('#err').textContent = ''; $('#dlg').showModal(); $('#task').focus(); };
-$('#go').onclick = async () => {
-  const b = $('#go'); b.disabled = true; $('#err').textContent = '';
+async function loadRepos() {
+  S.repos = (await api('/repos')).repos;
+  if (S.repo) { const fresh = S.repos.find((r) => r.id === S.repo.id); if (fresh) S.repo = fresh; else { S.repo = null; S.sel = null; S.view = null; } }
+}
+async function loadRuns() { if (!S.repo) { S.runs = []; return; } S.runs = (await api(repoBase() + '/runs')).runs; }
+async function pickRepo(id) {
+  S.repo = S.repos.find((r) => r.id === id) || null; S.sel = null; S.view = null; S.events = []; S.after = 0;
+  setHash(); await loadRuns(); render();
+}
+async function pickRun(id) {
+  S.sel = id; S.view = null; S.events = []; S.after = 0; S.tab = 'timeline'; setHash();
+  if (id) await refreshRun(); else render();
+}
+async function refreshRun() {
+  if (!S.repo || !S.sel) return;
+  const rid = S.repo.id, id = S.sel;
   try {
-    const r = await api('/runs', 'POST', { task: $('#task').value, jira: $('#jira').value.trim() || undefined, runner: $('#runner').value, autonomy: $('#auto').checked ? 'auto' : undefined, openPr: $('#openpr').checked });
-    $('#dlg').close(); $('#task').value = ''; $('#jira').value = '';
-    await refreshList(); await select(r.id);
-  } catch (e) { $('#err').textContent = e.message; } finally { b.disabled = false; }
-};
+    const v = await api(repoBase() + '/runs/' + encodeURIComponent(id) + '?after=' + S.after);
+    if (S.sel !== id || S.repo.id !== rid) return;
+    const prev = S.view;
+    const same = prev && prev.state.id === v.state.id && prev.lastSeq === v.lastSeq && prev.job === v.job && prev.notice === v.notice && v.events.length === 0;
+    S.events = S.events.concat(v.events); S.after = v.lastSeq; S.view = v;
+    if (!same) { renderRun(); renderSide(); }
+  } catch (e) { if (S.sel === id) $('#main').replaceChildren(h('section', { class: 'card err' }, e.message)); }
+}
 
-(async () => {
-  try {
-    state.info = await api('/info');
-    $('#repo').textContent = state.info.repo;
-    $('#keyhint').textContent = state.info.claudeKey ? '' : 'No ANTHROPIC_API_KEY on this machine; real agents will use an existing Claude Code login if there is one.';
-    if (state.info.dirty) $('#keyhint').textContent += ' Uncommitted changes in the repository are not seen by agents.';
-  } catch {}
-  await refreshList();
-  const fromHash = decodeURIComponent(location.hash.slice(1));
-  if (fromHash && state.runs.some((r) => r.id === fromHash)) await select(fromHash);
-  else if (state.runs[0]) await select(state.runs[0].id);
-  setInterval(refreshList, 4000);
-  setInterval(() => { if (!document.hidden) refreshRun(); }, 1500);
-})();
+async function boot() {
+  clearTimers();
+  let me;
+  try { me = await api('/me'); } catch (e) { $('#root').replaceChildren(h('div', { class: 'auth' }, h('h1', {}, 'Cannot reach the server'), h('div', { class: 'sub' }, e.message))); return; }
+  S.csrf = me.csrf; S.me = me.user ? me : null;
+  if (!me.user) { S.me = null; return authScreen(me.setupNeeded); }
+  S.me = me; S.me.user = me.user;
+  renderShell();
+  await loadRepos();
+  const [, rid, runId] = (decodeURIComponent(location.hash.slice(1)).split('/'));
+  const wantRepo = S.repos.find((r) => r.id === rid) || (S.repos.length === 1 ? S.repos[0] : null);
+  if (wantRepo) { S.repo = wantRepo; await loadRuns(); }
+  render();
+  if (S.repo && runId && S.runs.some((r) => r.id === runId)) await pickRun(runId);
+  S.timers.push(setInterval(async () => { if (document.hidden) return; try { await loadRepos(); await loadRuns(); renderSide(); if (!S.sel) renderRepoHome(); } catch {} }, 3000));
+  S.timers.push(setInterval(() => { if (!document.hidden) refreshRun(); }, 1500));
+}
+boot();
 </script>
 </body>
 </html>

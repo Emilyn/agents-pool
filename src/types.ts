@@ -219,6 +219,7 @@ export interface RunState {
   worktree: string;
   options: RunOptions;
   source?: RunSource;
+  createdBy?: string;
   pr?: { host: 'github' | 'gitlab'; url: string; number: number; draft: boolean; existing: boolean; remote: string };
   jiraCommented?: boolean;
   createdAt: string;

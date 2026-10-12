@@ -213,3 +213,27 @@ export function createClient(ref: HostRef, token: string, fetchImpl: FetchLike =
     },
   };
 }
+
+export interface RepoInfo {
+  defaultBranch: string;
+  canPush: boolean;
+  private: boolean;
+}
+
+/** Ask the host about a repository with this token: does it exist, what is its default branch, can we push? */
+export async function inspectRepo(ref: HostRef, token: string, fetchImpl: FetchLike = fetch): Promise<RepoInfo> {
+  const headers: Record<string, string> =
+    ref.kind === 'github'
+      ? { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'agentpool' }
+      : { 'PRIVATE-TOKEN': token, 'User-Agent': 'agentpool' };
+  const path = ref.kind === 'github' ? `/repos/${ref.project}` : `/projects/${encodeURIComponent(ref.project)}`;
+  const res = await fetchImpl(`${ref.apiUrl}${path}`, { headers });
+  const body = await readBody(res);
+  if (!res.ok) throw explain(res, body, ref, 'read the repository');
+  const j = body.json ?? {};
+  if (ref.kind === 'github') {
+    return { defaultBranch: String(j.default_branch ?? 'main'), canPush: Boolean(j.permissions?.push || j.permissions?.admin), private: Boolean(j.private) };
+  }
+  const level = Math.max(j.permissions?.project_access?.access_level ?? 0, j.permissions?.group_access?.access_level ?? 0);
+  return { defaultBranch: String(j.default_branch ?? 'main'), canPush: level >= 30, private: j.visibility !== 'public' };
+}

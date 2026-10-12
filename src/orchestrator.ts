@@ -50,7 +50,6 @@ import {
 import { firstLine, formatUsd, newRunId, truncate } from './util.js';
 
 const SYSTEM: Actor = { type: 'system', id: 'orchestrator' };
-const human = (): Actor => ({ type: 'human', id: process.env.USER ?? process.env.USERNAME ?? 'user' });
 const agent = (step: StepName): Actor => ({ type: 'agent', id: step });
 
 /** Only the first planning round may park the run on questions. Later rounds must commit to a plan. */
@@ -64,6 +63,8 @@ export interface OrchestratorDeps {
   channel: HumanChannel;
   repoConfig: RepoConfig;
   log?: (line: string) => void;
+  /** Who is acting as the human. Defaults to the OS user; the team server passes the logged-in account. */
+  humanId?: string;
 }
 
 /**
@@ -76,6 +77,10 @@ export interface OrchestratorDeps {
  */
 export class Orchestrator {
   constructor(private readonly d: OrchestratorDeps) {}
+
+  private human(): Actor {
+    return { type: 'human', id: this.d.humanId ?? process.env.USER ?? process.env.USERNAME ?? 'user' };
+  }
 
   private log(line: string): void {
     this.d.log?.(line);
@@ -94,7 +99,7 @@ export class Orchestrator {
     m: { type: MessageType; from: string; to: string; thread: string; round: number; body: string },
   ): void {
     const n = this.d.store.state(id).messages.length + 1;
-    const actor: Actor = m.from === 'human' ? human() : m.from === 'orchestrator' ? SYSTEM : { type: 'agent', id: m.from };
+    const actor: Actor = m.from === 'human' ? this.human() : m.from === 'orchestrator' ? SYSTEM : { type: 'agent', id: m.from };
     this.ev(id, actor, { type: 'message.posted', message: { id: `M-${n}`, ...m } });
   }
 
@@ -104,19 +109,19 @@ export class Orchestrator {
 
   /* ---------- Starting a run ---------- */
 
-  async startRun(input: { task: string; options: RunOptions; base?: string; source?: RunSource }): Promise<string> {
+  async startRun(input: { task: string; options: RunOptions; base?: string; /** Name shown and used as the merge target when `base` is a ref like origin/main. */ baseBranch?: string; source?: RunSource }): Promise<string> {
     const { repoRoot, store } = this.d;
     if (!(await hasCommits(repoRoot))) {
       throw new Error('This repository has no commits yet. Make an initial commit so agents have something to branch from.');
     }
     const id = newRunId();
-    const baseBranch = input.base ?? (await currentBranch(repoRoot));
+    const baseBranch = input.baseBranch ?? input.base ?? (await currentBranch(repoRoot));
     const baseCommit = await resolveCommit(repoRoot, input.base ?? 'HEAD');
     const branch = `agentpool/${id}`;
     const worktree = join(repoRoot, '.agentpool', 'worktrees', id);
     await ensureExcluded(repoRoot, ['.agentpool/runs/', '.agentpool/worktrees/']);
     await addWorktree(repoRoot, worktree, branch, baseCommit);
-    this.ev(id, SYSTEM, {
+    this.ev(id, this.d.humanId ? this.human() : SYSTEM, {
       type: 'run.created',
       runId: id,
       task: input.task,
@@ -144,11 +149,11 @@ export class Orchestrator {
   decideGate(runId: string, approved: boolean, note?: string): 'plan' | 'escalation' {
     const s = this.d.store.state(runId);
     if (s.phase === 'awaiting_plan_approval') {
-      this.ev(runId, human(), { type: 'gate.decided', gate: 'plan', approved, note });
+      this.ev(runId, this.human(), { type: 'gate.decided', gate: 'plan', approved, note });
       return 'plan';
     }
     if (s.phase === 'awaiting_escalation') {
-      this.ev(runId, human(), { type: 'gate.decided', gate: 'escalation', approved, note });
+      this.ev(runId, this.human(), { type: 'gate.decided', gate: 'escalation', approved, note });
       return 'escalation';
     }
     throw new Error(`Run ${runId} is in phase "${s.phase}", which is not waiting for approval`);
@@ -160,7 +165,7 @@ export class Orchestrator {
   }
 
   private recordAnswer(s: RunState, questionId: string, answer: string, viaDefault: boolean): void {
-    const actor = viaDefault ? SYSTEM : human();
+    const actor = viaDefault ? SYSTEM : this.human();
     this.ev(s.id, actor, { type: 'question.answered', id: questionId, answer, viaDefault });
     const q = s.questions.find((x) => x.id === questionId);
     this.post(s.id, {
@@ -310,7 +315,7 @@ export class Orchestrator {
       } else if (this.d.channel.interactive) {
         const r = await this.d.channel.confirmPlan(s);
         approved = r.approved;
-        this.ev(s.id, human(), { type: 'gate.decided', gate: 'plan', approved, note: r.note });
+        this.ev(s.id, this.human(), { type: 'gate.decided', gate: 'plan', approved, note: r.note });
       } else {
         this.log('  parked: waiting for plan approval');
         return false;
@@ -435,7 +440,7 @@ export class Orchestrator {
         this.ev(s.id, SYSTEM, { type: 'gate.decided', gate: 'escalation', approved, note: 'finish anyway, flagged as not ready' });
       } else if (this.d.channel.interactive) {
         approved = await this.d.channel.confirmEscalation(s, summary);
-        this.ev(s.id, human(), { type: 'gate.decided', gate: 'escalation', approved });
+        this.ev(s.id, this.human(), { type: 'gate.decided', gate: 'escalation', approved });
       } else {
         this.log(`  parked: ${summary}`);
         return false;
